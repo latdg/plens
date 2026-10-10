@@ -4,7 +4,8 @@
 # Fitxers: .github/workflows/plens.yml i plens.py (a l'arrel del repositori).
 # Secrets: TELEGRAM_TOKEN_PLENS, HF_TOKEN i GEMINI_API_KEY (resum per punts).
 # Canvi 10.10.2026: input «ordre» (ordre del dia en text, «pdf:<id>» o «resum»)
-# i resum per punts amb Gemini al final del pas «unir».
+# i resum per punts amb Gemini al final del pas «unir». Pas «seguiment»: el
+# percentatge de la transcripció al missatge de Telegram, cada minut.
 # =============================================================================
 name: Plens
 
@@ -43,6 +44,7 @@ jobs:
     timeout-minutes: 60
     outputs:
       trams: ${{ steps.p.outputs.trams }}
+      durada: ${{ steps.p.outputs.durada }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -83,6 +85,22 @@ jobs:
         run: python3 plens.py transcriure ${{ matrix.tros }}
       - uses: actions/upload-artifact@v4
         with: { name: "paraules-${{ matrix.tros }}", path: "treball/paraules_*.json", retention-days: 1 }
+
+  # Canvi 10.10.2026: percentatge de la transcripció al missatge de Telegram.
+  seguiment:
+    needs: preparar
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    continue-on-error: true
+    permissions:
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Seguiment cada minut
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DURADA: ${{ needs.preparar.outputs.durada }}
+        run: python3 plens.py seguiment
 
   parlants:
     needs: preparar
