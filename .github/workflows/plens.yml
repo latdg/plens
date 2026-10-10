@@ -2,7 +2,9 @@
 # PLENS I ÀUDIOS LLARGS — La TdG · 04.10.2026
 # Repositori PÚBLIC latdg/plens (minuts il·limitats i màquines de 4 processadors).
 # Fitxers: .github/workflows/plens.yml i plens.py (a l'arrel del repositori).
-# Secrets: TELEGRAM_TOKEN_PLENS i HF_TOKEN.
+# Secrets: TELEGRAM_TOKEN_PLENS, HF_TOKEN i GEMINI_API_KEY (resum per punts).
+# Canvi 10.10.2026: input «ordre» (ordre del dia en text, «pdf:<id>» o «resum»)
+# i resum per punts amb Gemini al final del pas «unir».
 # =============================================================================
 name: Plens
 
@@ -18,6 +20,7 @@ on:
       titol: { description: "títol", required: false, default: "" }
       model: { description: "turbo o aina", required: false, default: "turbo" }
       parlants: { description: "nombre de parlants (opcional)", required: false, default: "" }
+      ordre: { description: "ordre del dia (text, pdf:<id> o resum)", required: false, default: "" }
 
 env:
   TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN_PLENS }}
@@ -31,6 +34,8 @@ env:
   TITOL: ${{ inputs.titol }}
   MODEL: ${{ inputs.model }}
   PARLANTS: ${{ inputs.parlants }}
+  ORDRE: ${{ inputs.ordre }}
+  GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
 
 jobs:
   preparar:
@@ -96,8 +101,10 @@ jobs:
       - name: Eines
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
-          pip install -q torch torchaudio --index-url https://download.pytorch.org/whl/cpu
-          pip install -q "pyannote.audio==3.3.2" "numpy<2"
+          # Versions fixades (canvi 05.10.2026): amb torch 2.6 o més nou i huggingface_hub 1.x,
+          # pyannote 3.3.2 no pot carregar els seus models.
+          pip install -q "torch==2.5.1" "torchaudio==2.5.1" --index-url https://download.pytorch.org/whl/cpu
+          pip install -q "pyannote.audio==3.3.2" "numpy<2" "huggingface_hub<0.27"
       - uses: actions/download-artifact@v4
         with: { name: audio, path: treball/ }
       - name: Identificar qui parla
@@ -126,7 +133,10 @@ jobs:
             curl -sL -o lt.zip https://languagetool.org/download/LanguageTool-stable.zip
             mkdir -p ~/languagetool && unzip -q lt.zip -d ~/languagetool && rm -f lt.zip
           fi
-      - run: pip install -q requests
+      - name: Eines (requests i lector de PDF per a l'ordre del dia)
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq poppler-utils
+          pip install -q requests
       - uses: actions/download-artifact@v4
         with: { path: baixat/ }
       - name: Ajuntar
