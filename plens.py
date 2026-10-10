@@ -252,6 +252,7 @@ def preparar():
 
     with open(os.environ.get("GITHUB_OUTPUT", "/dev/null"), "a") as f:
         f.write("trams=" + json.dumps([t["i"] for t in trams]) + "\n")
+        f.write("durada=" + str(int(durada)) + "\n")   # canvi 10.10.2026: per al seguiment
 
     estat("⏳ Àudio de " + durada_text(durada) + ". Transcrivint en " + str(len(trams)) +
           (" tros" if len(trams) == 1 else " trossos") + " alhora amb " + NOMS_MODEL.get(MODEL, MODEL) +
@@ -280,6 +281,73 @@ def transcriure(n):
 
     with open(os.path.join(TREBALL, "paraules_%02d.json" % n), "w", encoding="utf-8") as f:
         json.dump(paraules, f, ensure_ascii=False)
+
+
+# -----------------------------------------------------------------------------
+# SEGUIMENT (canvi 10.10.2026): mentre es transcriuen els trossos, mira a GitHub
+# quants n'han acabat i escriu el percentatge al missatge «📥 Rebut!» cada minut.
+# -----------------------------------------------------------------------------
+def seguiment():
+    repo = os.environ.get("GITHUB_REPOSITORY", "")
+    run = os.environ.get("GITHUB_RUN_ID", "")
+    gh = os.environ.get("GH_TOKEN", "")
+    durada = int(os.environ.get("DURADA", "0") or 0)
+    if not (repo and run and gh and ESTAT):
+        print("Seguiment: falten dades; no es fa.")
+        return
+
+    inici = time.time()
+    darrer_text = ""
+    while time.time() - inici < 290 * 60:
+        try:
+            req = urllib.request.Request(
+                "https://api.github.com/repos/%s/actions/runs/%s/jobs?per_page=100" % (repo, run),
+                headers={"Authorization": "Bearer " + gh, "Accept": "application/vnd.github+json"})
+            with urllib.request.urlopen(req, timeout=30) as r:
+                feines = json.loads(r.read()).get("jobs", [])
+        except Exception as e:
+            print("Seguiment:", e)
+            time.sleep(60)
+            continue
+
+        trossos = [j for j in feines if j.get("name", "").startswith("transcriure")]
+        parl = [j for j in feines if j.get("name", "") == "parlants"]
+        fets = [j for j in trossos if j.get("status") == "completed"]
+        fallats = [j for j in fets if j.get("conclusion") not in ("success", "skipped")]
+        en_cua = [j for j in trossos if j.get("status") == "queued"]
+        total = len(trossos)
+
+        if parl and parl[0].get("status") == "completed":
+            text_parl = "✅ fet" if parl[0].get("conclusion") == "success" else "⚠️ no s'ha pogut"
+        else:
+            text_parl = "⏳ en curs"
+
+        minuts = int((time.time() - inici) / 60)
+        linies = []
+        if durada:
+            linies.append("Àudio de " + durada_text(durada) + " · " + NOMS_MODEL.get(MODEL, MODEL))
+        if total:
+            pct = int(len(fets) * 100 / total)
+            linies.append("📝 Transcripció: %d %% (%d de %d trossos)" % (pct, len(fets), total) +
+                          (" · %d en cua" % len(en_cua) if en_cua else "") +
+                          (" · ⚠️ %d amb error" % len(fallats) if fallats else ""))
+        else:
+            linies.append("📝 Transcripció: començant...")
+        linies.append("🗣️ Qui parla: " + text_parl)
+        linies.append("⏱️ Treballant des de fa %d min" % minuts)
+
+        acabat = total and len(fets) == total and parl and parl[0].get("status") == "completed"
+        if acabat:
+            linies.append("⏳ Ajuntant-ho tot. Després passarà el corrector de Softcatalà" +
+                          (" i farà el resum per punts." if ORDRE else "."))
+
+        text = "⏳ " + "\n".join(linies)
+        if text != darrer_text:
+            estat(text)
+            darrer_text = text
+        if acabat:
+            return
+        time.sleep(60)
 
 
 # -----------------------------------------------------------------------------
@@ -520,16 +588,24 @@ def unir():
             paragrafs.append({"p": p, "s": w["s"], "e": w["e"], "text": w["w"]})
         anterior = p
 
-    estat("⏳ Passant el corrector ortogràfic...")
+    estat("✅ Transcripció feta. ⏳ Engegant el corrector de Softcatalà...")
     corrector = engegar_corrector()
+    if not corrector:
+        estat("✅ Transcripció feta. ⚠️ El corrector no s'ha pogut engegar: la transcripció sortirà sense corregir.")
     correccions = 0
-    for par in paragrafs:
+    darrer_avis = time.time()
+    for n, par in enumerate(paragrafs):
         par["text"] = re.sub(r"\s+", " ", par["text"]).strip()
         if par["text"]:
             par["text"] = par["text"][0].upper() + par["text"][1:]
         if corrector:
             par["text"], c = corregir(par["text"])
             correccions += c
+            # Canvi 10.10.2026: percentatge del corrector, cada minut.
+            if time.time() - darrer_avis > 60:
+                estat("✅ Transcripció feta. ✏️ Passant el corrector: %d %% (%d correccions fins ara)" %
+                      (int((n + 1) * 100 / len(paragrafs)), correccions))
+                darrer_avis = time.time()
     if corrector:
         corrector.kill()
 
@@ -580,6 +656,8 @@ if __name__ == "__main__":
             transcriure(int(sys.argv[2]))
         elif pas == "parlants":
             parlants()
+        elif pas == "seguiment":
+            seguiment()
         elif pas == "unir":
             unir()
         elif pas == "error":
