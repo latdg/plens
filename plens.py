@@ -554,6 +554,148 @@ def text_consistori(ordre_text):
     return "\n".join(linies)
 
 
+# -----------------------------------------------------------------------------
+# NOMS DEL CONSISTORI (canvi 11.10.2026)
+# Quan a la transcripció surt «senyor Vidal», «senyora Somalla» o «senyor Gaetan
+# Xapel», es corregeix el cognom i s'hi afegeix el nom sencer entre claudàtors:
+# «senyor Vidal [Francesc Vidal Rodríguez]», «senyora Sumalla [Neus Sumalla
+# Saballs]», «senyor Gaëtan Chapel». Només es toca darrere de senyor, senyora,
+# regidor, regidora, alcalde, alcaldessa o tinent/a d'alcalde, i només si
+# s'assembla clarament a algú del consistori.
+# -----------------------------------------------------------------------------
+import difflib, unicodedata
+
+TRACTAMENTS = r"(?:[Ss]enyor(?:a)?|[Ss]r\.?|[Ss]ra\.?|[Rr]egidor(?:a)?|[Aa]lcalde(?:ssa)?|[Tt]inent(?:a)? d'alcalde|[Cc]ompany(?:a)?)"
+ROLS_FORA_CONSISTORI = ("secretari", "secretària", "interventor", "interventora", "tresorer", "tresorera", "tècnic", "tècnica")
+
+
+def fonetic(paraula):
+    t = unicodedata.normalize("NFD", paraula.lower())
+    t = "".join(c for c in t if unicodedata.category(c) != "Mn")
+    t = re.sub(r"[^a-zç]", "", t)
+    for a, b in (("tx", "x"), ("ch", "x"), ("ç", "s"), ("ll", "l"), ("ss", "s"), ("v", "b"), ("y", "i"), ("h", "")):
+        t = t.replace(a, b)
+    return t
+
+
+def persones_consistori(text):
+    """[{nom, paraules, dona, alies}] a partir de les línies «nom | càrrec | grup | àlies»."""
+    persones = []
+    for linia in text.splitlines():
+        if linia.strip().startswith("#"):
+            continue
+        camps = [c.strip() for c in linia.split("|")]
+        if len(camps) < 2 or not camps[0]:
+            continue
+        carrec = camps[1].lower()
+        dona = bool(re.search(r"\b(regidora|tinenta|alcaldessa|presidenta)\b", carrec))
+        alies = [a.strip() for a in camps[3].split(",")] if len(camps) > 3 and camps[3] else []
+        persones.append({"nom": camps[0], "paraules": camps[0].split(), "dona": dona, "alies": alies})
+    return persones
+
+
+def millor_persona(paraules_dites, persones, dona=None):
+    """Busca a qui correspon «Vidal», «Gaetan Xapel», «Ben Saïd»... Retorna (persona, n_paraules) o (None, 0)."""
+    candidats = []
+    for n in (2, 1):                       # primer, dues paraules seguides (Gaetan Xapel, Ben Saïd)
+        if len(paraules_dites) < n:
+            continue
+        dit = fonetic("".join(paraules_dites[:n]))
+        if len(dit) < 4:
+            continue
+        for p in persones:
+            if dona is not None and p["dona"] != dona:
+                continue
+            opcions = []
+            for k, w in enumerate(p["paraules"]):
+                opcions.append((fonetic(w), k))                                       # una paraula del nom
+                if k + 1 < len(p["paraules"]):
+                    opcions.append((fonetic(w + p["paraules"][k + 1]), 1))            # dues paraules seguides
+            opcions += [(fonetic(a), 1) for a in p["alies"]]
+            for forma, posicio in opcions:
+                r = difflib.SequenceMatcher(None, dit, forma).ratio()
+                if r >= 0.8:
+                    # «Senyor Martí» és més sovint el primer cognom que no pas el nom de pila o el segon cognom.
+                    bonus = 0 if posicio == 0 else (0.05 if posicio == 1 else 0.03)
+                    candidats.append((r + bonus + (0.05 if n == 2 else 0), p, n))
+        if candidats:
+            break
+    if not candidats:
+        return None, 0
+    candidats.sort(key=lambda c: -c[0])
+    millor = candidats[0]
+    # Ambigu: dues persones diferents amb la mateixa puntuació.
+    if any(c[1] is not millor[1] and abs(c[0] - millor[0]) < 0.015 for c in candidats[1:]):
+        return None, 0
+    return millor[1], millor[2]
+
+
+def persona_per_nom_complet(nom, persones):
+    """Per als noms que dona Gemini: totes les paraules han de ser del nom d'una persona de la llista
+    («Òscar Aparicio», «Gaetan Xapel»), i almenys una ha de ser un cognom. Si no, None."""
+    tot = fonetic(nom)
+    for p in persones:
+        if tot == fonetic(p["nom"]) or any(len(fonetic(a)) >= 5 and fonetic(a) in tot for a in p["alies"]):
+            return p
+    dites = [fonetic(w) for w in nom.split() if len(fonetic(w)) >= 3]
+    if not dites:
+        return None
+    millor, punts_millor = None, 0
+    for p in persones:
+        propies = [fonetic(w) for w in p["paraules"]]
+        trobades, cognom = 0, False
+        for d in dites:
+            ratios = [difflib.SequenceMatcher(None, d, w).ratio() for w in propies]
+            k = max(range(len(ratios)), key=lambda i: ratios[i])
+            if ratios[k] >= 0.8:
+                trobades += 1
+                cognom = cognom or k > 0
+        if trobades == len(dites) and cognom and trobades > punts_millor:
+            millor, punts_millor = p, trobades
+    return millor
+
+
+def corregir_noms(text, persones):
+    if not persones:
+        return text, 0
+    canvis = [0]
+    patro = re.compile(r"\b(" + TRACTAMENTS + r")(\s+)((?:d['’]|de\s+)?)((?:[A-ZÀ-Ý][\w'’·À-ÿ-]*)(?:\s+[A-ZÀ-Ý][\w'’·À-ÿ-]*){0,2})")
+
+    def substitueix(m):
+        tractament, espai, prep, nom_dit = m.group(1), m.group(2), m.group(3), m.group(4)
+        if "[" in text[m.end():m.end() + 2]:
+            return m.group(0)                                   # ja corregit
+        t = tractament.lower()
+        dona = True if re.search(r"(senyora|sra|regidora|alcaldessa|tinenta|companya)", t) else \
+            (False if re.search(r"(senyor|sr|regidor|alcalde|tinent|company)", t) else None)
+        paraules = nom_dit.split()
+        persona, n = millor_persona(paraules, persones, dona)
+        if not persona:
+            return m.group(0)
+        dites = paraules[:n]
+        resta = " ".join(paraules[n:])
+        # Forma correcta de les paraules dites (Xapel -> Chapel, Somalla -> Sumalla).
+        correctes = []
+        for w in dites:
+            fw = fonetic(w)
+            bona = max(persona["paraules"], key=lambda x: difflib.SequenceMatcher(None, fw, fonetic(x)).ratio())
+            correctes.append(bona if difflib.SequenceMatcher(None, fw, fonetic(bona)).ratio() >= 0.8 else w)
+        if n == 2 and len(correctes) == 2 and fonetic("".join(dites)) in [fonetic(a) for a in persona["alies"]] + \
+                [fonetic(persona["paraules"][k] + persona["paraules"][k + 1]) for k in range(len(persona["paraules"]) - 1)]:
+            # «Ben Saïd» -> «Bensahid»: dues paraules dites que són una del nom
+            unides = [w for w in persona["paraules"] if fonetic(w) == fonetic("".join(dites))]
+            if unides:
+                correctes = unides
+        nou = " ".join(correctes)
+        if nou != persona["nom"]:
+            nou += " [" + persona["nom"] + "]"
+        canvis[0] += 1
+        return tractament + espai + prep + nou + ((" " + resta) if resta else "")
+
+    nou_text = patro.sub(substitueix, text)
+    return nou_text, canvis[0]
+
+
 def gemini(prompt, json_mode=False):
     import requests
     errors = []
@@ -600,11 +742,15 @@ def identificar_parlants(blocs_transcripcio, etiquetes):
         "pregunta adreçada a una persona concreta; qui presideix i dona la paraula és l'alcalde. El nom pot estar mal "
         "transcrit («Xapel» per Chapel): fes servir la forma correcta de la composició del consistori. Una persona que "
         "no sigui del consistori (secretari, interventor, públic) també es pot identificar pel càrrec.\n"
+        "Fes servir NOMÉS els noms de la composició del consistori, escrits exactament com hi surten. No hi afegeixis "
+        "ningú que no hi sigui: si una veu no és de cap regidor, només la pots identificar pel càrrec (Secretari, "
+        "Interventor...) si es diu a la transcripció; si no, segur: false.\n"
         "Si una etiqueta sembla que barreja persones diferents, o no n'estàs segur, posa segur: false.\n\n"
         "Respon NOMÉS amb un objecte JSON amb aquesta forma, amb totes les etiquetes:\n"
         '{"Parlant 1": {"nom": "Nom i cognoms", "detall": "càrrec o grup", "segur": true, "prova": "frase curta"}}\n\n'
         "TRANSCRIPCIÓ:\n" + "\n\n".join(blocs_transcripcio)
     )
+    persones = persones_consistori(consistori)
     resposta = gemini(prompt, json_mode=True)
     resposta = re.sub(r"^```(?:json)?|```$", "", resposta.strip()).strip()
     dades = json.loads(resposta)
@@ -612,7 +758,15 @@ def identificar_parlants(blocs_transcripcio, etiquetes):
     resultat = {}
     for etiqueta, d in (dades or {}).items():
         if isinstance(d, dict) and d.get("segur") is True and str(d.get("nom") or "").strip():
-            resultat[etiqueta] = {"nom": str(d["nom"]).strip()[:80], "detall": str(d.get("detall") or "").strip()[:120]}
+            nom = str(d["nom"]).strip()
+            # Canvi 11.10.2026: només noms de la llista (escrits com a la llista) o un càrrec de fora del consistori.
+            persona = persona_per_nom_complet(nom, persones)
+            if persona:
+                nom = persona["nom"]
+            elif persones and not any(r in nom.lower() for r in ROLS_FORA_CONSISTORI):
+                print("%s: «%s» no és a la llista del consistori; no es fa servir" % (etiqueta, nom))
+                continue
+            resultat[etiqueta] = {"nom": nom[:80], "detall": str(d.get("detall") or "").strip()[:120]}
         print("%s -> %s" % (etiqueta, json.dumps(d, ensure_ascii=False)[:300]))
     return resultat
 
@@ -646,6 +800,9 @@ def resumir(blocs_transcripcio):
         "«Votació: no es diu a la gravació».\n"
         "Els punts de tràmit (aprovació de l'acta, donar compte de decrets) es poden resumir en una línia.\n"
         "3. Al final, «TITULARS POSSIBLES»: de 3 a 5 titulars informatius i curts amb el que és més notícia del ple.\n\n"
+        "NOMS: cada persona del consistori, amb el nom sencer tal com surt a la composició (si a la transcripció diu "
+        "«el senyor Vidal», escriu Francesc Vidal Rodríguez). Si el nom surt mal transcrit, fes servir el de la llista. "
+        "No hi posis ningú que no sigui a la llista, llevat del secretari o l'interventor pel càrrec.\n"
         "NORMES: català normatiu i to periodístic neutre. No hi afegeixis res que no surti a la transcripció. "
         "Escriu els imports, les xifres i els noms tal com surten. Text pla, sense markdown (ni asteriscs ni "
         "coixinets). Separa cada bloc (qui parla, cada punt i els titulars) amb una línia que només contingui ———.\n\n"
@@ -739,6 +896,15 @@ def unir():
                 darrer_avis = time.time()
     if corrector:
         corrector.kill()
+
+    # Canvi 11.10.2026: noms del consistori ben escrits i sencers.
+    persones = persones_consistori(text_consistori(ORDRE if not ORDRE.startswith("pdf:") else ""))
+    noms_corregits = 0
+    for par in paragrafs:
+        if par["text"]:
+            par["text"], c = corregir_noms(par["text"], persones)
+            noms_corregits += c
+    print("Noms del consistori: %d mencions completades" % noms_corregits)
 
     # Canvi 04.10.2026: la transcripció va dins dels missatges (sense fitxers).
     capcalera = ["📝 " + (TITOL or info.get("nom") or "Transcripció"),
