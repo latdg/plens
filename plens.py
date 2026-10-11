@@ -43,6 +43,13 @@ API = "https://api.telegram.org/bot" + TOKEN
 #   "pdf:<file_id>" -> PDF de l'ordre del dia enviat al bot
 #   qualsevol text  -> l'ordre del dia enganxat al missatge
 ORDRE = os.environ.get("ORDRE", "").strip()
+# Canvi 11.10.2026: altres àudios (entrevistes, taules rodones...). El Worker posa els
+# participants dins de l'input «ordre»:  PARTICIPANTS: Anna Puig (AMPA), Joan Serra\n===\n<ordre>
+PARTICIPANTS = ""
+if ORDRE.upper().startswith("PARTICIPANTS:"):
+    _cap, _sep, _resta = ORDRE.partition("\n===\n")
+    PARTICIPANTS = _cap.split(":", 1)[1].strip()
+    ORDRE = _resta.strip()
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 GEMINI_MODELS = [m for m in [os.environ.get("GEMINI_MODEL", "").strip(), "gemini-flash-latest", "gemini-2.5-flash"] if m]
 
@@ -348,7 +355,7 @@ def seguiment():
         acabat = total and len(fets) == total and (parl or parl_t) and parl_acabat
         if acabat:
             linies.append("⏳ Ajuntant-ho tot. Després passarà el corrector de Softcatalà" +
-                          (" i farà el resum per punts." if ORDRE else "."))
+                          (" i farà el resum." if ORDRE else "."))
 
         text = "⏳ " + "\n".join(linies)
         if text != darrer_text:
@@ -548,8 +555,37 @@ def troba_fitxer(carpetes, nom):
     return os.path.join(carpetes[0], nom)
 
 
+def llista_participants():
+    """«Anna Puig (presidenta de l'AMPA), Joan Serra; Pere Vila» -> línies «nom | detall»."""
+    linies = []
+    for tros in re.split(r",\s*(?![^()]*\))|;|\n", PARTICIPANTS):
+        tros = tros.strip(" .")
+        if not tros:
+            continue
+        m = re.match(r"^(.*?)\s*\((.*)\)\s*$", tros)
+        nom, detall = (m.group(1).strip(), m.group(2).strip()) if m else (tros, "")
+        if nom:
+            linies.append(nom + " | " + (detall or "participant"))
+    return "\n".join(linies)
+
+
+def es_ple():
+    """Canvi 11.10.2026: la llista del consistori només s'aplica als plens."""
+    if PARTICIPANTS:
+        return False
+    nom_real = os.environ.get("NOM", "").strip() or llegir_json(os.path.join(TREBALL, "info.json"), {}).get("nom", "")
+    on = " ".join([TITOL, nom_real, ORDRE if not ORDRE.startswith("pdf:") else "ple"]).lower()
+    on = on.replace("resum", " ")
+    return bool(re.search(r"\bple(?![a-zà-ÿ])|plenari|plenària|ordre del dia", on))
+
+
 def text_consistori(ordre_text):
-    """Composició del consistori que toca, o "" si no hi ha el fitxer."""
+    """Persones de referència: els participants que s'han indicat; si no n'hi ha i és un ple,
+    la composició del consistori; si no és un ple, res."""
+    if PARTICIPANTS:
+        return llista_participants()
+    if not es_ple():
+        return ""
     on = (TITOL + " " + ordre_text[:2000]).lower()
     nom = CONSISTORI_PER_DEFECTE
     for paraula, fitxer in CONSISTORIS:
@@ -600,7 +636,12 @@ def persones_consistori(text):
         if len(camps) < 2 or not camps[0]:
             continue
         carrec = camps[1].lower()
-        dona = bool(re.search(r"\b(regidora|tinenta|alcaldessa|presidenta)\b", carrec))
+        if re.search(r"\b(regidora|tinenta|alcaldessa|presidenta|directora|secretària|consellera|diputada)\b", carrec):
+            dona = True
+        elif re.search(r"\b(regidor|tinent|alcalde|president|director|secretari|conseller|diputat)\b", carrec):
+            dona = False
+        else:
+            dona = None          # no se sap (participants sense càrrec)
         alies = [a.strip() for a in camps[3].split(",")] if len(camps) > 3 and camps[3] else []
         detall = camps[1] + (" · " + camps[2] if len(camps) > 2 and camps[2] else "")
         persones.append({"nom": camps[0], "paraules": camps[0].split(), "dona": dona, "alies": alies, "detall": detall})
@@ -617,7 +658,7 @@ def millor_persona(paraules_dites, persones, dona=None):
         if len(dit) < 4:
             continue
         for p in persones:
-            if dona is not None and p["dona"] != dona:
+            if dona is not None and p["dona"] is not None and p["dona"] != dona:
                 # Gènere diferent: només s'accepten els àlies (Whisper sovint confon senyor/senyora).
                 for a in p["alies"]:
                     r = difflib.SequenceMatcher(None, dit, fonetic(a)).ratio()
@@ -808,20 +849,37 @@ def identificar_parlants(blocs_transcripcio, etiquetes):
         raise RuntimeError("falta el secret GEMINI_API_KEY al repositori")
 
     consistori = text_consistori(text_ordre_del_dia() if ORDRE.startswith("pdf:") else ORDRE)
+    if es_ple():
+        context = (
+            "Tens la transcripció automàtica d'un ple municipal. Una eina automàtica ha separat les veus i les ha "
+            "numerat (" + ", ".join(etiquetes) + "). Digues quina persona real és cada etiqueta.\n\n"
+            + ("COMPOSICIÓ DEL CONSISTORI (nom | càrrec | grup):\n" + consistori + "\n\n" if consistori else "")
+            + "Fes-ho NOMÉS amb proves clares de la transcripció: l'alcalde o l'alcaldessa dona la paraula a algú pel "
+            "nom i la intervenció següent és d'aquella etiqueta; algú es presenta o diu de quin grup és; algú respon una "
+            "pregunta adreçada a una persona concreta; qui presideix i dona la paraula és l'alcalde. El nom pot estar mal "
+            "transcrit («Xapel» per Chapel): fes servir la forma correcta de la composició del consistori. Una persona que "
+            "no sigui del consistori (secretari, interventor, públic) també es pot identificar pel càrrec.\n"
+            "Si l'alcalde dona la paraula a algú només pel càrrec («la primera tinenta d'alcalde», «el regidor d'Hisenda»), "
+            "busca a la composició del consistori qui té aquell càrrec i fes-lo servir.\n"
+            "Fes servir NOMÉS els noms de la composició del consistori, escrits exactament com hi surten. No hi afegeixis "
+            "ningú que no hi sigui: si una veu no és de cap regidor, només la pots identificar pel càrrec (Secretari, "
+            "Interventor...) si es diu a la transcripció; si no, segur: false.\n"
+        )
+    else:
+        context = (
+            "Tens la transcripció automàtica d'un àudio (entrevista, reunió, taula rodona o similar). Una eina "
+            "automàtica ha separat les veus i les ha numerat (" + ", ".join(etiquetes) + "). Digues quina persona real "
+            "és cada etiqueta.\n\n"
+            + ("PARTICIPANTS (nom | qui és):\n" + consistori + "\n\n" if consistori else
+               "No tens la llista de participants: només pots posar un nom si a la gravació algú es presenta o "
+               "l'anomenen clarament.\n\n")
+            + "Fes-ho NOMÉS amb proves clares de la transcripció: algú es presenta, el presentador o el moderador dona "
+            "la paraula a algú pel nom, algú respon una pregunta adreçada a una persona concreta, o pel que explica de si "
+            "mateix (el càrrec, l'entitat). El nom pot estar mal transcrit: fes servir la forma correcta de la llista.\n"
+            + ("Fes servir NOMÉS els noms de la llista de participants, escrits exactament com hi surten.\n" if consistori else "")
+        )
     prompt = (
-        "Tens la transcripció automàtica d'un ple municipal. Una eina automàtica ha separat les veus i les ha "
-        "numerat (" + ", ".join(etiquetes) + "). Digues quina persona real és cada etiqueta.\n\n"
-        + ("COMPOSICIÓ DEL CONSISTORI (nom | càrrec | grup):\n" + consistori + "\n\n" if consistori else "")
-        + "Fes-ho NOMÉS amb proves clares de la transcripció: l'alcalde o l'alcaldessa dona la paraula a algú pel "
-        "nom i la intervenció següent és d'aquella etiqueta; algú es presenta o diu de quin grup és; algú respon una "
-        "pregunta adreçada a una persona concreta; qui presideix i dona la paraula és l'alcalde. El nom pot estar mal "
-        "transcrit («Xapel» per Chapel): fes servir la forma correcta de la composició del consistori. Una persona que "
-        "no sigui del consistori (secretari, interventor, públic) també es pot identificar pel càrrec.\n"
-        "Si l'alcalde dona la paraula a algú només pel càrrec («la primera tinenta d'alcalde», «el regidor d'Hisenda»), "
-        "busca a la composició del consistori qui té aquell càrrec i fes-lo servir.\n"
-        "Fes servir NOMÉS els noms de la composició del consistori, escrits exactament com hi surten. No hi afegeixis "
-        "ningú que no hi sigui: si una veu no és de cap regidor, només la pots identificar pel càrrec (Secretari, "
-        "Interventor...) si es diu a la transcripció; si no, segur: false.\n"
+        context +
         "Si una etiqueta sembla que barreja persones diferents, o no n'estàs segur, posa segur: false.\n\n"
         "Respon NOMÉS amb un objecte JSON amb aquesta forma, amb totes les etiquetes:\n"
         '{"Parlant 1": {"nom": "Nom i cognoms", "detall": "càrrec o grup", "segur": true, "prova": "frase curta"}}\n\n'
@@ -858,29 +916,53 @@ def resumir(blocs_transcripcio):
     consistori = text_consistori(ordre_text)
     transcripcio = "\n\n".join(blocs_transcripcio)
 
-    prompt = (
-        "Ets redactor de La TdG, un mitjà local de la Bisbal d'Empordà. Tens la transcripció automàtica d'una "
-        "sessió plenària municipal. La transcripció pot tenir errors. Els parlants ja identificats surten amb el nom; "
-        "els altres, numerats (Parlant 1, Parlant 2...). Una eina automàtica separa les veus i de vegades s'equivoca.\n\n"
-        + ("COMPOSICIÓ DEL CONSISTORI (nom | càrrec | grup):\n" + consistori + "\n\n" if consistori else "")
-        + ("ORDRE DEL DIA:\n" + ordre_text + "\n\n" if ordre_text else
-           "No tens l'ordre del dia: dedueix els punts a partir de la transcripció.\n\n")
-        + "FES AIXÒ:\n"
-        "1. PUNTS. Per a cada punt de l'ordre del dia, en ordre:\n"
-        "- número i títol del punt;\n"
-        "- hora d'inici a la transcripció [hh:mm:ss];\n"
-        "- resum de 2 a 4 frases: què s'hi aprova o s'hi debat i per què;\n"
-        "- intervencions: una línia per persona (nom i grup) amb la seva posició en una frase;\n"
-        "- votació: el resultat i què ha votat cada grup, només si es diu a la gravació; si no es diu, escriu "
-        "«Votació: no es diu a la gravació».\n"
-        "Els punts de tràmit (aprovació de l'acta, donar compte de decrets) es poden resumir en una línia.\n"
-        "2. Al final, «TITULARS POSSIBLES»: de 3 a 5 titulars informatius i curts amb el que és més notícia del ple.\n\n"
-        "NOMS: cada persona del consistori, amb el nom sencer tal com surt a la composició (si a la transcripció diu "
-        "«el senyor Vidal», escriu Francesc Vidal Rodríguez). Si el nom surt mal transcrit, fes servir el de la llista. "
-        "No hi posis ningú que no sigui a la llista, llevat del secretari o l'interventor pel càrrec.\n"
+    if es_ple():
+        prompt = (
+            "Ets redactor de La TdG, un mitjà local de la Bisbal d'Empordà. Tens la transcripció automàtica d'una "
+            "sessió plenària municipal. La transcripció pot tenir errors. Els parlants ja identificats surten amb el nom; "
+            "els altres, numerats (Parlant 1, Parlant 2...). Una eina automàtica separa les veus i de vegades s'equivoca.\n\n"
+            + ("COMPOSICIÓ DEL CONSISTORI (nom | càrrec | grup):\n" + consistori + "\n\n" if consistori else "")
+            + ("ORDRE DEL DIA:\n" + ordre_text + "\n\n" if ordre_text else
+               "No tens l'ordre del dia: dedueix els punts a partir de la transcripció.\n\n")
+            + "FES AIXÒ:\n"
+            "1. PUNTS. Per a cada punt de l'ordre del dia, en ordre:\n"
+            "- número i títol del punt;\n"
+            "- hora d'inici a la transcripció [hh:mm:ss];\n"
+            "- resum de 2 a 4 frases: què s'hi aprova o s'hi debat i per què;\n"
+            "- intervencions: una línia per persona (nom i grup) amb la seva posició en una frase;\n"
+            "- votació: el resultat i què ha votat cada grup, només si es diu a la gravació; si no es diu, escriu "
+            "«Votació: no es diu a la gravació».\n"
+            "Els punts de tràmit (aprovació de l'acta, donar compte de decrets) es poden resumir en una línia.\n"
+            "2. Al final, «TITULARS POSSIBLES»: de 3 a 5 titulars informatius i curts amb el que és més notícia del ple.\n\n"
+            "NOMS: cada persona del consistori, amb el nom sencer tal com surt a la composició (si a la transcripció diu "
+            "«el senyor Vidal», escriu Francesc Vidal Rodríguez). Si el nom surt mal transcrit, fes servir el de la llista. "
+            "No hi posis ningú que no sigui a la llista, llevat del secretari o l'interventor pel càrrec.\n"
+        )
+    else:
+        # Canvi 11.10.2026: altres àudios (entrevistes, reunions, taules rodones...).
+        prompt = (
+            "Ets redactor de La TdG, un mitjà local de la Bisbal d'Empordà. Tens la transcripció automàtica d'un "
+            "àudio llarg (entrevista, reunió, roda de premsa, taula rodona o similar). La transcripció pot tenir errors. "
+            "Els parlants identificats surten amb el nom; els altres, numerats (Parlant 1, Parlant 2...).\n\n"
+            + ("PARTICIPANTS (nom | qui és):\n" + consistori + "\n\n" if consistori else "")
+            + ("TEMES QUE ES TRACTEN:\n" + ordre_text + "\n\n" if ordre_text else
+               "No tens la llista de temes: dedueix-los de la transcripció, en l'ordre en què surten.\n\n")
+            + "FES AIXÒ:\n"
+            "1. Una primera part «DE QUÈ VA», de 2 a 3 frases: qui parla, en quin context i de què.\n"
+            "2. TEMES. Per a cada tema, en l'ordre en què es tracta:\n"
+            "- títol del tema;\n"
+            "- hora d'inici a la transcripció [hh:mm:ss];\n"
+            "- resum de 2 a 4 frases;\n"
+            "- qui hi diu què: una línia per persona amb la seva idea principal;\n"
+            "- si n'hi ha, una frase textual destacable entre cometes, amb qui la diu i l'hora.\n"
+            "3. Al final, «TITULARS POSSIBLES»: de 3 a 5 titulars informatius i curts.\n\n"
+            "NOMS: fes servir els noms tal com surten a la llista de participants. No hi posis ningú que no hi sigui, "
+            "si hi ha llista.\n"
+        )
+    prompt += (
         "NORMES: català normatiu i to periodístic neutre. No hi afegeixis res que no surti a la transcripció. "
         "Escriu els imports, les xifres i els noms tal com surten. Text pla, sense markdown (ni asteriscs ni "
-        "coixinets). Separa cada bloc (cada punt i els titulars) amb una línia que només contingui ———.\n\n"
+        "coixinets). Separa cada bloc (cada punt o tema i els titulars) amb una línia que només contingui ———.\n\n"
         "TRANSCRIPCIÓ:\n" + transcripcio
     )
 
@@ -889,7 +971,8 @@ def resumir(blocs_transcripcio):
     trossos = [t.strip() for t in re.split(r"^\s*[—–\-_=]{3,}\s*$", resposta, flags=re.M) if t.strip()]
 
     nota = ("Fet amb Gemini a partir de la transcripció automàtica" +
-            (" i l'ordre del dia" if ordre_text else " (sense ordre del dia)") +
+            ((" i l'ordre del dia" if ordre_text else " (sense ordre del dia)") if es_ple() else
+             (" i la llista de temes" if ordre_text else "")) +
             ". Revisa'l abans de publicar-lo.")
     return nota, trossos   # canvi 11.10.2026: es posa al document de Word
 
@@ -933,7 +1016,7 @@ def crear_word(cami, titol, dades_capcalera, qui_es_qui, resum, paragrafs_finals
 
     if resum:
         nota, trossos = resum
-        doc.add_heading("Resum per punts", level=1)
+        doc.add_heading("Resum per punts" if es_ple() else "Resum per temes", level=1)
         p = doc.add_paragraph()
         r = p.add_run(nota)
         r.italic = True
@@ -1057,7 +1140,7 @@ def unir():
     capcalera_avisos = []
     # Canvi 11.10.2026: noms del consistori ben escrits i sencers.
     persones = persones_consistori(text_consistori(ORDRE if not ORDRE.startswith("pdf:") else ""))
-    if not persones:
+    if not persones and es_ple():
         capcalera_avisos.append("⚠️ No s'ha trobat la llista del consistori (carpeta consistoris/ del repositori): "
                                 "els noms dels regidors no s'han pogut comprovar.")
     noms_corregits = 0
@@ -1126,12 +1209,12 @@ def unir():
     # Resum per punts (canvi 10.10.2026).
     resum_punts, avis_resum = None, ""
     if ORDRE:
-        estat(resum + "\n⏳ Preparant el resum per punts amb Gemini...")
+        estat(resum + "\n⏳ Preparant el resum amb Gemini...")
         try:
             resum_punts = resumir(cos)
         except Exception as e:
             print("::warning::Resum per punts: %s" % e)
-            avis_resum = "⚠️ No he pogut fer el resum per punts: " + str(e)[:300]
+            avis_resum = "⚠️ No he pogut fer el resum: " + str(e)[:300]
 
     # Canvi 11.10.2026: tot en un sol document de Word, en lloc de molts missatges.
     estat(resum + "\n⏳ Preparant el document de Word...")
@@ -1147,12 +1230,12 @@ def unir():
         crear_word(cami, titol_doc, dades, [l[2:] for l in capcalera if l.startswith("• ")], resum_punts, paragrafs_finals)
         llegenda_doc = ("📄 " + titol_doc + "\n" + durada_text(durada) +
                         (" · " + str(len(identificats)) + " parlants amb nom" if identificats else "") +
-                        (" · amb resum per punts" if resum_punts else "") +
+                        ((" · amb resum per punts" if es_ple() else " · amb resum per temes") if resum_punts else "") +
                         "\nTranscripció automàtica: revisa-la abans de citar-la.")
         enviar_document(cami, llegenda_doc)
         if avis_resum:
             enviar_text(avis_resum)
-        estat(resum + "\n📄 Document de Word enviat" + (" (amb resum per punts)." if resum_punts else "."))
+        estat(resum + "\n📄 Document de Word enviat" + (" (amb resum)." if resum_punts else "."))
     except Exception as e:
         # Si el Word falla, com abans: tot en missatges.
         print("::warning::Document de Word: %s" % e)
