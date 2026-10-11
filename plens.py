@@ -655,6 +655,44 @@ def persona_per_nom_complet(nom, persones):
     return millor
 
 
+# -----------------------------------------------------------------------------
+# DICCIONARI DE CORRECCIONS (canvi 11.10.2026): fitxer correccions.txt a l'arrel
+# del repositori. Una línia per correcció:   l'Avisbal => la Bisbal
+# No distingeix majúscules; si la paraula original comença en majúscula, la
+# correcció també («L'Avisbal» -> «La Bisbal»). Només paraules senceres.
+# -----------------------------------------------------------------------------
+def llegir_correccions(cami="correccions.txt"):
+    llista = []
+    try:
+        with open(cami, encoding="utf-8") as f:
+            for linia in f:
+                linia = linia.strip()
+                if not linia or linia.startswith("#") or "=>" not in linia:
+                    continue
+                mal, be = [x.strip() for x in linia.split("=>", 1)]
+                if mal:
+                    llista.append((mal, be))
+    except OSError:
+        print("Correccions: no hi ha el fitxer " + cami)
+    llista.sort(key=lambda x: -len(x[0]))          # primer les més llargues
+    return llista
+
+
+def aplicar_correccions(text, llista):
+    canvis = 0
+    for mal, be in llista:
+        patro = re.compile(r"(?<![\w·])" + re.escape(mal).replace("'", "['’]") + r"(?![\w·])", re.IGNORECASE)
+
+        def subst(m):
+            original = m.group(0)
+            if original[:1].isupper() and be[:1].islower():
+                return be[:1].upper() + be[1:]
+            return be
+        text, n = patro.subn(subst, text)
+        canvis += n
+    return text, canvis
+
+
 def corregir_noms(text, persones):
     if not persones:
         return text, 0
@@ -969,6 +1007,15 @@ def unir():
                 darrer_avis = time.time()
     if corrector:
         corrector.kill()
+
+    # Canvi 11.10.2026: diccionari de correccions (correccions.txt).
+    correccions_llista = llegir_correccions()
+    correccions_dic = 0
+    for par in paragrafs:
+        if par["text"]:
+            par["text"], c = aplicar_correccions(par["text"], correccions_llista)
+            correccions_dic += c
+    print("Diccionari: %d paraules corregides (%d entrades)" % (correccions_dic, len(correccions_llista)))
 
     # Canvi 11.10.2026: noms del consistori ben escrits i sencers.
     persones = persones_consistori(text_consistori(ORDRE if not ORDRE.startswith("pdf:") else ""))
