@@ -1025,7 +1025,7 @@ def crear_word(cami, titol, dades_capcalera, qui_es_qui, resum, paragrafs_finals
     if qui_es_qui:
         doc.add_heading("Qui és qui", level=1)
         p = doc.add_paragraph()
-        r = p.add_run("Identificat amb Gemini a partir del que es diu al ple. Revisa-ho abans de citar ningú.")
+        r = p.add_run("Identificat amb Gemini a partir del que es diu a la gravació. Revisa-ho abans de citar ningú.")
         r.italic = True
         r.font.color.rgb = gris
         for linia in qui_es_qui:
@@ -1214,13 +1214,27 @@ def unir():
         for etiqueta_pyannote, parlant in noms.items():
             noms_finals[etiqueta_pyannote] = identificats[parlant]["nom"] if parlant in identificats else parlant
         cos = muntar_blocs(noms_finals)
-        llegenda = ["🗣️ Qui és qui (identificat amb Gemini pel que es diu al ple; revisa-ho):"]
+        llegenda = ["🗣️ Qui és qui (identificat amb Gemini pel que es diu a la gravació; revisa-ho):"]
+        # Canvi 11.10.2026: si dues veus són la mateixa persona (l'eina de veus de vegades
+        # en separa una en dues), surt una sola vegada: «Joan Corney — ponent (Parlants 2 i 3)».
+        per_nom = {}
         for parlant in sorted(noms.values(), key=lambda x: int(x.split()[-1])):
             if parlant in identificats:
                 d = identificats[parlant]
-                llegenda.append("• " + d["nom"] + (" — " + d["detall"] if d["detall"] else "") + " (" + parlant + ")")
+                clau = d["nom"].lower()
+                if clau not in per_nom:
+                    per_nom[clau] = {"d": d, "parlants": []}
+                    llegenda.append(clau)
+                per_nom[clau]["parlants"].append(parlant.split()[-1])
             else:
                 llegenda.append("• " + parlant + ": no identificat")
+        for k, linia in enumerate(llegenda):
+            if linia in per_nom:
+                g = per_nom[linia]
+                nums = g["parlants"]
+                quins = ("Parlant " + nums[0]) if len(nums) == 1 else \
+                    ("Parlants " + ", ".join(nums[:-1]) + " i " + nums[-1])
+                llegenda[k] = "• " + g["d"]["nom"] + (" — " + g["d"]["detall"] if g["d"]["detall"] else "") + " (" + quins + ")"
         capcalera.append("")
         capcalera.extend(llegenda)
 
@@ -1250,7 +1264,18 @@ def unir():
     titol_doc = TITOL or info.get("nom") or "Transcripció"
     try:
         etiquetes = noms_finals if identificats else noms
-        paragrafs_finals = [(hms(par["s"]), etiquetes.get(par["p"], ""), par["text"]) for par in paragrafs if par["text"]]
+        paragrafs_finals = []
+        for par in paragrafs:
+            if not par["text"]:
+                continue
+            qui = etiquetes.get(par["p"], "")
+            # Canvi 11.10.2026: dues intervencions seguides de la mateixa persona (dues veus
+            # que eren la mateixa) s'ajunten en un sol paràgraf.
+            if paragrafs_finals and qui and paragrafs_finals[-1][1] == qui:
+                t, q, txt = paragrafs_finals[-1]
+                paragrafs_finals[-1] = (t, q, txt + " " + par["text"])
+            else:
+                paragrafs_finals.append((hms(par["s"]), qui, par["text"]))
         os.makedirs("sortida", exist_ok=True)
         cami = os.path.join("sortida", net(titol_doc) + ".docx")
         dades = [l for l in capcalera[1:] if l and not l.startswith("🗣️") and not l.startswith("• ")]
