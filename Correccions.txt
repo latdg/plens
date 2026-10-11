@@ -1,0 +1,31 @@
+# =============================================================================
+# DICCIONARI DE CORRECCIONS — bot de plens de La TdG
+# Paraules que la transcripció automàtica escriu malament, i com han de quedar.
+# Una línia per correcció:   com surt => com ha de ser
+#   · No distingeix majúscules: «l'Avisbal» també corregeix «L'Avisbal».
+#   · Si a la transcripció comença en majúscula, la correcció també.
+#   · Només paraules senceres («Visbal» no tocarà «Visbalada»).
+#   · Les línies que comencen amb # no es llegeixen.
+# Quan vegis una errada que es repeteix, afegeix-la aquí i desa el fitxer.
+# Els noms dels regidors no cal posar-los aquí: van a consistoris/la-bisbal.txt.
+# =============================================================================
+
+# La Bisbal
+l'Avisbal => la Bisbal
+l'Abisbal => la Bisbal
+la Visbal => la Bisbal
+Lavisbal => la Bisbal
+Labisbal => la Bisbal
+Visbal => Bisbal
+
+# Municipis i nuclis
+Corsà => Corçà
+Forallach => Forallac
+Cruilles => Cruïlles
+Peretallada => Peratallada
+Vulpellach => Vulpellac
+Canapós => Canapost
+
+# Territori
+Empurdà => Empordà
+Gabarres => Gavarres
