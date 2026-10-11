@@ -192,7 +192,7 @@ jobs:
       - name: Eines (requests i lector de PDF per a l'ordre del dia)
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq poppler-utils
-          pip install -q requests "numpy<2" scipy
+          pip install -q requests "numpy<2" scipy python-docx
       - uses: actions/download-artifact@v4
         with: { path: baixat/ }
       - name: Ajuntar
