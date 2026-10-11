@@ -50,6 +50,10 @@ if ORDRE.upper().startswith("PARTICIPANTS:"):
     _cap, _sep, _resta = ORDRE.partition("\n===\n")
     PARTICIPANTS = _cap.split(":", 1)[1].strip()
     ORDRE = _resta.strip()
+# Canvi 11.10.2026: «nomes» = l'usuari ha triat «Només transcripció» (sense resum).
+NOMES_TRANSCRIPCIO = ORDRE.lower() == "nomes"
+if NOMES_TRANSCRIPCIO:
+    ORDRE = ""
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 GEMINI_MODELS = [m for m in [os.environ.get("GEMINI_MODEL", "").strip(), "gemini-flash-latest", "gemini-2.5-flash"] if m]
 
@@ -355,7 +359,7 @@ def seguiment():
         acabat = total and len(fets) == total and (parl or parl_t) and parl_acabat
         if acabat:
             linies.append("⏳ Ajuntant-ho tot. Després passarà el corrector de Softcatalà" +
-                          (" i farà el resum." if ORDRE else "."))
+                          ("." if NOMES_TRANSCRIPCIO else " i farà el resum."))
 
         text = "⏳ " + "\n".join(linies)
         if text != darrer_text:
@@ -446,17 +450,30 @@ def ajuntar_parlants(fitxers):
     if not vectors:
         return {"torns": [], "error": "cap tros amb veus identificades" + ("; " + "; ".join(errors) if errors else "")}
 
+    # Canvi 11.10.2026: fora les empremtes buides o no vàlides (un vector de zeros, o amb valors
+    # infinits, feia fallar l'agrupació: «The condensed distance matrix must contain only finite values»).
     X = np.array(vectors, dtype=float)
-    X = X / np.linalg.norm(X, axis=1, keepdims=True)
-    if len(X) == 1:
-        grups = [1]
-    else:
-        Z = linkage(X, method="centroid", metric="euclidean")
-        if PARLANTS.isdigit() and int(PARLANTS) > 0:
-            grups = fcluster(Z, t=int(PARLANTS), criterion="maxclust")
+    normes = np.linalg.norm(X, axis=1) if len(X) else np.array([])
+    valides = [k for k in range(len(X)) if np.all(np.isfinite(X[k])) and np.isfinite(normes[k]) and normes[k] > 1e-6]
+    global_de = {}
+    if valides:
+        Xv = X[valides] / normes[valides][:, None]
+        if len(Xv) == 1:
+            grups = [1]
         else:
-            grups = fcluster(Z, t=LLINDAR_VEUS, criterion="distance")
-    global_de = {claus[k]: "V%02d" % int(grups[k]) for k in range(len(claus))}
+            Z = linkage(Xv, method="centroid", metric="euclidean")
+            if PARLANTS.isdigit() and int(PARLANTS) > 0:
+                grups = fcluster(Z, t=int(PARLANTS), criterion="maxclust")
+            else:
+                grups = fcluster(Z, t=LLINDAR_VEUS, criterion="distance")
+        for j, k in enumerate(valides):
+            global_de[claus[k]] = "V%02d" % int(grups[j])
+    # Les veus sense empremta vàlida es queden com a veu pròpia del seu tros (no es perden).
+    for k in range(len(claus)):
+        if claus[k] not in global_de:
+            global_de[claus[k]] = "T%02d_%s" % (int(claus[k][0] or 0), claus[k][1])
+    if len(valides) < len(claus):
+        print("Parlants per trossos: %d empremtes no vàlides (es deixen sense ajuntar)" % (len(claus) - len(valides)))
 
     torns = []
     for i, t in torns_bruts:
@@ -1087,8 +1104,16 @@ def unir():
         try:
             diar = ajuntar_parlants(fitxers_trossos)
         except Exception as e:
+            # Pla B: cada tros amb les seves veus, sense ajuntar-les entre trossos.
             print("::warning::No s'han pogut ajuntar les veus: %s" % e)
-            diar = {"torns": [], "error": "no s'han pogut ajuntar les veus dels trossos (" + str(e)[:120] + ")"}
+            torns_locals = []
+            for cami in fitxers_trossos:
+                d = llegir_json(cami, {})
+                for t in d.get("torns") or []:
+                    torns_locals.append({"s": t["s"], "e": t["e"], "p": "T%02d_%s" % (int(d.get("i") or 0), t["p"])})
+            torns_locals.sort(key=lambda t: t["s"])
+            diar = {"torns": torns_locals,
+                    "error": "" if torns_locals else "no s'han pogut ajuntar les veus dels trossos (" + str(e)[:120] + ")"}
     torns = diar.get("torns", [])
 
     # Paràgrafs: canvi de parlant o pausa llarga.
@@ -1208,7 +1233,11 @@ def unir():
              ("\n⚠️ Falten trossos: " + ", ".join(str(i + 1) for i in falten) if falten else ""))
     # Resum per punts (canvi 10.10.2026).
     resum_punts, avis_resum = None, ""
-    if ORDRE:
+    # Canvi 11.10.2026: resum per defecte a tots els àudios (plens: per punts; altres: per
+    # temes), excepte si s'ha triat «Només transcripció» (ORDRE = "nomes").
+    if NOMES_TRANSCRIPCIO:
+        print("Només transcripció: sense resum")
+    if not NOMES_TRANSCRIPCIO:
         estat(resum + "\n⏳ Preparant el resum amb Gemini...")
         try:
             resum_punts = resumir(cos)
