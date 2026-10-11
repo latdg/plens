@@ -5,7 +5,9 @@
 # quatre passos:
 #   python3 plens.py preparar       descarrega l'àudio i el talla en trossos
 #   python3 plens.py transcriure N  transcriu el tros N (els trossos van en paral·lel)
-#   python3 plens.py parlants       identifica qui parla (pyannote, com WhisperX)
+#   python3 plens.py parlants       identifica qui parla (pyannote, com WhisperX), d'una tirada
+#   python3 plens.py parlants_tros N  identifica qui parla al tros N (canvi 11.10.2026: els
+#                                   trossos van en paral·lel i «unir» ajunta les veus iguals)
 #   python3 plens.py unir           ajunta-ho tot, passa el corrector i ho envia
 #
 # RESUM PER PUNTS (canvi 10.10.2026): si al missatge del bot hi ha l'ordre del
@@ -311,16 +313,23 @@ def seguiment():
             continue
 
         trossos = [j for j in feines if j.get("name", "").startswith("transcriure")]
-        parl = [j for j in feines if j.get("name", "") == "parlants"]
+        parl = [j for j in feines if j.get("name", "") == "parlants" and j.get("conclusion") != "skipped"]
+        parl_t = [j for j in feines if j.get("name", "").startswith("parlants_trossos") and j.get("conclusion") != "skipped"]
         fets = [j for j in trossos if j.get("status") == "completed"]
         fallats = [j for j in fets if j.get("conclusion") not in ("success", "skipped")]
         en_cua = [j for j in trossos if j.get("status") == "queued"]
         total = len(trossos)
 
-        if parl and parl[0].get("status") == "completed":
+        if parl_t:
+            parl_fets = [j for j in parl_t if j.get("status") == "completed"]
+            text_parl = "%d %% (%d de %d trossos)" % (int(len(parl_fets) * 100 / len(parl_t)), len(parl_fets), len(parl_t))
+            parl_acabat = len(parl_fets) == len(parl_t)
+        elif parl and parl[0].get("status") == "completed":
             text_parl = "✅ fet" if parl[0].get("conclusion") == "success" else "⚠️ no s'ha pogut"
+            parl_acabat = True
         else:
             text_parl = "⏳ en curs"
+            parl_acabat = False
 
         minuts = int((time.time() - inici) / 60)
         linies = []
@@ -336,7 +345,7 @@ def seguiment():
         linies.append("🗣️ Qui parla: " + text_parl)
         linies.append("⏱️ Treballant des de fa %d min" % minuts)
 
-        acabat = total and len(fets) == total and parl and parl[0].get("status") == "completed"
+        acabat = total and len(fets) == total and (parl or parl_t) and parl_acabat
         if acabat:
             linies.append("⏳ Ajuntant-ho tot. Després passarà el corrector de Softcatalà" +
                           (" i farà el resum per punts." if ORDRE else "."))
@@ -373,6 +382,83 @@ def parlants():
         resultat["error"] = str(e)[:300]
     with open(sortida, "w", encoding="utf-8") as f:
         json.dump(resultat, f)
+
+
+# Canvi 11.10.2026: qui parla, tros a tros (en paral·lel). A més dels torns, es
+# desa una «empremta» (embedding) de cada veu, per poder saber després quines
+# veus de trossos diferents són la mateixa persona.
+def parlants_tros(n):
+    sortida = os.path.join(TREBALL, "parlants_%02d.json" % n)
+    resultat = {"i": n, "torns": [], "empremtes": {}, "error": ""}
+    try:
+        if not HF_TOKEN:
+            raise RuntimeError("falta el secret HF_TOKEN")
+        info = llegir_json(os.path.join(TREBALL, "info.json"), {})
+        tros = [t for t in info.get("trams", []) if t["i"] == n][0]
+        import numpy as np
+        from pyannote.audio import Pipeline
+        pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1", use_auth_token=HF_TOKEN)
+        opcions = {}
+        if PARLANTS.isdigit() and int(PARLANTS) > 0:
+            opcions["max_speakers"] = int(PARLANTS)   # en un tros hi pot parlar menys gent
+        diar, empremtes = pipeline(tros["fitxer"], return_embeddings=True, **opcions)
+        for t, _, p in diar.itertracks(yield_label=True):
+            resultat["torns"].append({"s": round(tros["inici"] + t.start, 2), "e": round(tros["inici"] + t.end, 2), "p": p})
+        for k, etiqueta in enumerate(diar.labels()):
+            if empremtes is not None and k < len(empremtes) and np.all(np.isfinite(empremtes[k])):
+                resultat["empremtes"][etiqueta] = [round(float(x), 5) for x in empremtes[k]]
+        print("Tros %d: %d torns, %d veus" % (n, len(resultat["torns"]), len(resultat["empremtes"])))
+    except Exception as e:
+        print("::warning::Tros %d: no s'ha pogut identificar qui parla: %s" % (n, e))
+        resultat["error"] = str(e)[:300]
+    with open(sortida, "w", encoding="utf-8") as f:
+        json.dump(resultat, f)
+
+
+# Ajunta els resultats dels trossos: agrupa les empremtes de veu de tots els
+# trossos (mateix mètode i llindar que pyannote 3.1) i torna els torns amb una
+# etiqueta comuna per a cada persona.
+LLINDAR_VEUS = 0.7045
+
+
+def ajuntar_parlants(fitxers):
+    import numpy as np
+    from scipy.cluster.hierarchy import linkage, fcluster
+
+    claus, vectors, torns_bruts, errors = [], [], [], []
+    for cami in sorted(fitxers):
+        d = llegir_json(cami, {})
+        if d.get("error"):
+            errors.append("tros %s: %s" % (d.get("i"), d["error"][:80]))
+        for etiqueta, v in (d.get("empremtes") or {}).items():
+            claus.append((d.get("i"), etiqueta))
+            vectors.append(v)
+        for t in d.get("torns") or []:
+            torns_bruts.append((d.get("i"), t))
+
+    if not vectors:
+        return {"torns": [], "error": "cap tros amb veus identificades" + ("; " + "; ".join(errors) if errors else "")}
+
+    X = np.array(vectors, dtype=float)
+    X = X / np.linalg.norm(X, axis=1, keepdims=True)
+    if len(X) == 1:
+        grups = [1]
+    else:
+        Z = linkage(X, method="centroid", metric="euclidean")
+        if PARLANTS.isdigit() and int(PARLANTS) > 0:
+            grups = fcluster(Z, t=int(PARLANTS), criterion="maxclust")
+        else:
+            grups = fcluster(Z, t=LLINDAR_VEUS, criterion="distance")
+    global_de = {claus[k]: "V%02d" % int(grups[k]) for k in range(len(claus))}
+
+    torns = []
+    for i, t in torns_bruts:
+        g = global_de.get((i, t["p"]))
+        if g:
+            torns.append({"s": t["s"], "e": t["e"], "p": g})
+    torns.sort(key=lambda t: t["s"])
+    print("Parlants per trossos: %d veus locals -> %d persones" % (len(claus), len(set(global_de.values()))))
+    return {"torns": torns, "error": ("; ".join(errors) if errors and not torns else "")}
 
 
 # -----------------------------------------------------------------------------
@@ -468,13 +554,15 @@ def text_consistori(ordre_text):
     return "\n".join(linies)
 
 
-def gemini(prompt):
+def gemini(prompt, json_mode=False):
     import requests
     errors = []
     for model in GEMINI_MODELS:
         url = "https://generativelanguage.googleapis.com/v1beta/models/" + model + ":generateContent"
         cos = {"contents": [{"role": "user", "parts": [{"text": prompt}]}],
                "generationConfig": {"temperature": 0.2, "maxOutputTokens": 32768}}
+        if json_mode:
+            cos["generationConfig"]["responseMimeType"] = "application/json"
         for intent in range(3):
             r = requests.post(url, headers={"x-goog-api-key": GEMINI_KEY, "Content-Type": "application/json"},
                               json=cos, timeout=600)
@@ -493,6 +581,40 @@ def gemini(prompt):
             return text
         errors.append(model + ": resposta buida")
     raise RuntimeError("; ".join(errors)[:400])
+
+
+def identificar_parlants(blocs_transcripcio, etiquetes):
+    """Canvi 10.10.2026: diu qui és cada «Parlant N» (a partir de la composició del
+    consistori i del que es diu al ple). Retorna {"Parlant 1": {"nom": ..., "detall": ...}}
+    només amb els que Gemini dona per segurs."""
+    if not GEMINI_KEY:
+        raise RuntimeError("falta el secret GEMINI_API_KEY al repositori")
+
+    consistori = text_consistori(text_ordre_del_dia() if ORDRE.startswith("pdf:") else ORDRE)
+    prompt = (
+        "Tens la transcripció automàtica d'un ple municipal. Una eina automàtica ha separat les veus i les ha "
+        "numerat (" + ", ".join(etiquetes) + "). Digues quina persona real és cada etiqueta.\n\n"
+        + ("COMPOSICIÓ DEL CONSISTORI (nom | càrrec | grup):\n" + consistori + "\n\n" if consistori else "")
+        + "Fes-ho NOMÉS amb proves clares de la transcripció: l'alcalde o l'alcaldessa dona la paraula a algú pel "
+        "nom i la intervenció següent és d'aquella etiqueta; algú es presenta o diu de quin grup és; algú respon una "
+        "pregunta adreçada a una persona concreta; qui presideix i dona la paraula és l'alcalde. El nom pot estar mal "
+        "transcrit («Xapel» per Chapel): fes servir la forma correcta de la composició del consistori. Una persona que "
+        "no sigui del consistori (secretari, interventor, públic) també es pot identificar pel càrrec.\n"
+        "Si una etiqueta sembla que barreja persones diferents, o no n'estàs segur, posa segur: false.\n\n"
+        "Respon NOMÉS amb un objecte JSON amb aquesta forma, amb totes les etiquetes:\n"
+        '{"Parlant 1": {"nom": "Nom i cognoms", "detall": "càrrec o grup", "segur": true, "prova": "frase curta"}}\n\n'
+        "TRANSCRIPCIÓ:\n" + "\n\n".join(blocs_transcripcio)
+    )
+    resposta = gemini(prompt, json_mode=True)
+    resposta = re.sub(r"^```(?:json)?|```$", "", resposta.strip()).strip()
+    dades = json.loads(resposta)
+
+    resultat = {}
+    for etiqueta, d in (dades or {}).items():
+        if isinstance(d, dict) and d.get("segur") is True and str(d.get("nom") or "").strip():
+            resultat[etiqueta] = {"nom": str(d["nom"]).strip()[:80], "detall": str(d.get("detall") or "").strip()[:120]}
+        print("%s -> %s" % (etiqueta, json.dumps(d, ensure_ascii=False)[:300]))
+    return resultat
 
 
 def resumir(blocs_transcripcio):
@@ -570,6 +692,15 @@ def unir():
         raise RuntimeError("No s'ha pogut transcriure cap tros (o l'àudio no té veu).")
 
     diar = llegir_json(os.path.join(TREBALL, "parlants.json"), {"torns": [], "error": "no hi ha resultat"})
+    # Canvi 11.10.2026: si s'ha fet per trossos, s'ajunten aquí.
+    fitxers_trossos = glob.glob(os.path.join(TREBALL, "parlants_[0-9][0-9].json"))
+    if fitxers_trossos and not diar.get("torns"):
+        estat("✅ Transcripció feta. ⏳ Ajuntant les veus dels trossos...")
+        try:
+            diar = ajuntar_parlants(fitxers_trossos)
+        except Exception as e:
+            print("::warning::No s'han pogut ajuntar les veus: %s" % e)
+            diar = {"torns": [], "error": "no s'han pogut ajuntar les veus dels trossos (" + str(e)[:120] + ")"}
     torns = diar.get("torns", [])
 
     # Paràgrafs: canvi de parlant o pausa llarga.
@@ -621,14 +752,47 @@ def unir():
     if falten:
         capcalera.append("⚠️ Falten els trossos " + ", ".join(str(i + 1) for i in falten) + " (no s'han pogut transcriure).")
 
-    blocs = ["\n".join(capcalera)]
-    for par in paragrafs:
-        if par["text"]:
-            blocs.append("[" + hms(par["s"]) + "]" + (" " + noms[par["p"]] + ":" if par["p"] in noms else "") +
-                         "\n" + par["text"])
+    def muntar_blocs(etiquetes_parlants):
+        llista = []
+        for par in paragrafs:
+            if par["text"]:
+                llista.append("[" + hms(par["s"]) + "]" +
+                              (" " + etiquetes_parlants[par["p"]] + ":" if par["p"] in etiquetes_parlants else "") +
+                              "\n" + par["text"])
+        return llista
+
+    cos = muntar_blocs(noms)
+
+    # Canvi 10.10.2026: noms reals dels parlants (Gemini), abans d'enviar la transcripció.
+    identificats = {}
+    if noms and GEMINI_KEY:
+        estat("✅ Transcripció i correcció fetes. ⏳ Identificant qui és cada parlant amb Gemini...")
+        try:
+            identificats = identificar_parlants(cos, sorted(noms.values(), key=lambda x: int(x.split()[-1])))
+        except Exception as e:
+            print("::warning::Identificació de parlants: %s" % e)
+            capcalera.append("⚠️ No s'han pogut posar els noms dels parlants (" + str(e)[:150] + ").")
+
+    if identificats:
+        noms_finals = {}
+        for etiqueta_pyannote, parlant in noms.items():
+            noms_finals[etiqueta_pyannote] = identificats[parlant]["nom"] if parlant in identificats else parlant
+        cos = muntar_blocs(noms_finals)
+        llegenda = ["🗣️ Qui és qui (identificat amb Gemini pel que es diu al ple; revisa-ho):"]
+        for parlant in sorted(noms.values(), key=lambda x: int(x.split()[-1])):
+            if parlant in identificats:
+                d = identificats[parlant]
+                llegenda.append("• " + d["nom"] + (" — " + d["detall"] if d["detall"] else "") + " (" + parlant + ")")
+            else:
+                llegenda.append("• " + parlant + ": no identificat")
+        capcalera.append("")
+        capcalera.extend(llegenda)
+
+    blocs = ["\n".join(capcalera)] + cos
 
     resum = ("✅ Fet: " + durada_text(durada) + " · " + NOMS_MODEL.get(MODEL, MODEL) +
              (" · " + str(len(noms)) + " parlants" if noms else " · sense identificar parlants") +
+             (" (" + str(len(identificats)) + " amb nom)" if identificats else "") +
              " · ✏️ " + (str(correccions) + " correccions" if corrector else "corrector no disponible") +
              ("\n⚠️ Falten trossos: " + ", ".join(str(i + 1) for i in falten) if falten else ""))
     estat(resum)
@@ -656,6 +820,8 @@ if __name__ == "__main__":
             transcriure(int(sys.argv[2]))
         elif pas == "parlants":
             parlants()
+        elif pas == "parlants_tros":
+            parlants_tros(int(sys.argv[2]))
         elif pas == "seguiment":
             seguiment()
         elif pas == "unir":
