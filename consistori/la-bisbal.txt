@@ -1,5 +1,6 @@
 # Ajuntament de la Bisbal d'Empordà — composició del ple (17 regidors)
-# Una línia per persona: nom | càrrec | grup. Les línies que comencen amb # no es llegeixen.
+# Una línia per persona: nom | càrrec | grup | àlies (opcional: com el diuen o com surt mal escrit, separats per comes).
+# Les línies que comencen amb # no es llegeixen.
 # Font: labisbal.cat/regidors (10.10.2026). Si canvia algú, edita només la seva línia.
 # Equip de govern (7): PSC - Independents per la Bisbal - CP i Compromís x la Bisbal - Junts.
 Òscar Aparicio Pedrosa | Alcalde | PSC - Independents per la Bisbal - CP
@@ -19,4 +20,4 @@ Neus Sumalla Saballs | Regidora de l'oposició | CUP - Som Poble - Amunt
 Enric Llensa Martí | Regidor de l'oposició | CUP - Som Poble - Amunt
 Carles Anglada | Regidor de l'oposició | Tots x la Bisbal
 Francesc Cabrillana Benítez | Regidor de l'oposició | Tots x la Bisbal
-Bilal Bensahid Zahuan | Regidor de l'oposició | La Bisbal En Comú Podem
+Bilal Bensahid Zahuan | Regidor de l'oposició | La Bisbal En Comú Podem | Ben Saïd, Bensaid
