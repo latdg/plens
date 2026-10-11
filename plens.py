@@ -813,11 +813,84 @@ def resumir(blocs_transcripcio):
     resposta = re.sub(r"\*\*|__|^#+\s*", "", resposta, flags=re.M)
     trossos = [t.strip() for t in re.split(r"^\s*[—–\-_=]{3,}\s*$", resposta, flags=re.M) if t.strip()]
 
-    capcalera = ("🧾 RESUM PER PUNTS — " + (TITOL or "Ple") + "\n"
-                 "Fet amb Gemini a partir de la transcripció automàtica" +
-                 (" i l'ordre del dia" if ordre_text else " (sense ordre del dia)") +
-                 ". Revisa'l abans de publicar-lo.")
-    enviar_en_missatges([capcalera] + trossos)
+    nota = ("Fet amb Gemini a partir de la transcripció automàtica" +
+            (" i l'ordre del dia" if ordre_text else " (sense ordre del dia)") +
+            ". Revisa'l abans de publicar-lo.")
+    return nota, trossos   # canvi 11.10.2026: es posa al document de Word
+
+
+# -----------------------------------------------------------------------------
+# DOCUMENT DE WORD (canvi 11.10.2026): tot en un sol fitxer .docx
+#   capçalera · qui és qui · resum per punts · transcripció
+# -----------------------------------------------------------------------------
+def crear_word(cami, titol, dades_capcalera, qui_es_qui, resum, paragrafs_finals):
+    from docx import Document
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.shared import Pt, RGBColor, Cm
+
+    doc = Document()
+    sec = doc.sections[0]
+    sec.page_height, sec.page_width = Cm(29.7), Cm(21.0)        # A4
+    for marge in ("left_margin", "right_margin", "top_margin", "bottom_margin"):
+        setattr(sec, marge, Cm(2.2))
+
+    estil = doc.styles["Normal"]
+    estil.font.name = "Calibri"
+    estil.font.size = Pt(11)
+    estil.paragraph_format.space_after = Pt(6)
+    gris = RGBColor(0x59, 0x59, 0x59)
+
+    doc.add_heading(titol, level=0)
+    for linia in dades_capcalera:
+        p = doc.add_paragraph()
+        r = p.add_run(linia)
+        r.font.color.rgb = gris
+        r.font.size = Pt(10)
+
+    if qui_es_qui:
+        doc.add_heading("Qui és qui", level=1)
+        p = doc.add_paragraph()
+        r = p.add_run("Identificat amb Gemini a partir del que es diu al ple. Revisa-ho abans de citar ningú.")
+        r.italic = True
+        r.font.color.rgb = gris
+        for linia in qui_es_qui:
+            doc.add_paragraph(linia, style="List Bullet")
+
+    if resum:
+        nota, trossos = resum
+        doc.add_heading("Resum per punts", level=1)
+        p = doc.add_paragraph()
+        r = p.add_run(nota)
+        r.italic = True
+        r.font.color.rgb = gris
+        for tros in trossos:
+            linies = [l.rstrip() for l in tros.splitlines() if l.strip()]
+            if not linies:
+                continue
+            doc.add_heading(linies[0].lstrip("-•* ").strip(), level=2)
+            for l in linies[1:]:
+                net_l = l.strip()
+                if re.match(r"^[-•*]\s+", net_l):
+                    doc.add_paragraph(re.sub(r"^[-•*]\s+", "", net_l), style="List Bullet")
+                else:
+                    doc.add_paragraph(net_l)
+
+    doc.add_heading("Transcripció", level=1)
+    for temps, qui, text in paragrafs_finals:
+        p = doc.add_paragraph()
+        p.paragraph_format.space_after = Pt(8)
+        r = p.add_run("[" + temps + "] ")
+        r.font.color.rgb = gris
+        r.font.size = Pt(9)
+        if qui:
+            r = p.add_run(qui + ": ")
+            r.bold = True
+        p.add_run(text)
+
+    peu = sec.footer.paragraphs[0]
+    peu.text = "La TdG · Transcripció automàtica"
+    peu.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    doc.save(cami)
 
 
 # -----------------------------------------------------------------------------
@@ -961,19 +1034,45 @@ def unir():
              (" (" + str(len(identificats)) + " amb nom)" if identificats else "") +
              " · ✏️ " + (str(correccions) + " correccions" if corrector else "corrector no disponible") +
              ("\n⚠️ Falten trossos: " + ", ".join(str(i + 1) for i in falten) if falten else ""))
-    estat(resum)
-    enviar_en_missatges(blocs)
-
-    # Resum per punts (canvi 10.10.2026). Si falla, la transcripció ja s'ha enviat.
+    # Resum per punts (canvi 10.10.2026).
+    resum_punts, avis_resum = None, ""
     if ORDRE:
         estat(resum + "\n⏳ Preparant el resum per punts amb Gemini...")
         try:
-            resumir(blocs[1:])
-            estat(resum + "\n🧾 Resum per punts enviat.")
+            resum_punts = resumir(cos)
         except Exception as e:
             print("::warning::Resum per punts: %s" % e)
-            enviar_text("⚠️ No he pogut fer el resum per punts: " + str(e)[:500])
-            estat(resum + "\n⚠️ Sense resum per punts.")
+            avis_resum = "⚠️ No he pogut fer el resum per punts: " + str(e)[:300]
+
+    # Canvi 11.10.2026: tot en un sol document de Word, en lloc de molts missatges.
+    estat(resum + "\n⏳ Preparant el document de Word...")
+    titol_doc = TITOL or info.get("nom") or "Transcripció"
+    try:
+        etiquetes = noms_finals if identificats else noms
+        paragrafs_finals = [(hms(par["s"]), etiquetes.get(par["p"], ""), par["text"]) for par in paragrafs if par["text"]]
+        os.makedirs("sortida", exist_ok=True)
+        cami = os.path.join("sortida", net(titol_doc) + ".docx")
+        dades = [l for l in capcalera[1:] if l and not l.startswith("🗣️") and not l.startswith("• ")]
+        if avis_resum:
+            dades.append(avis_resum)
+        crear_word(cami, titol_doc, dades, [l[2:] for l in capcalera if l.startswith("• ")], resum_punts, paragrafs_finals)
+        llegenda_doc = ("📄 " + titol_doc + "\n" + durada_text(durada) +
+                        (" · " + str(len(identificats)) + " parlants amb nom" if identificats else "") +
+                        (" · amb resum per punts" if resum_punts else "") +
+                        "\nTranscripció automàtica: revisa-la abans de citar-la.")
+        enviar_document(cami, llegenda_doc)
+        if avis_resum:
+            enviar_text(avis_resum)
+        estat(resum + "\n📄 Document de Word enviat" + (" (amb resum per punts)." if resum_punts else "."))
+    except Exception as e:
+        # Si el Word falla, com abans: tot en missatges.
+        print("::warning::Document de Word: %s" % e)
+        estat(resum + "\n⚠️ No s'ha pogut fer el Word; t'ho envio en missatges.")
+        enviar_en_missatges(blocs)
+        if resum_punts:
+            enviar_en_missatges(["🧾 RESUM PER PUNTS — " + titol_doc + "\n" + resum_punts[0]] + resum_punts[1])
+        if avis_resum:
+            enviar_text(avis_resum)
 
 
 # -----------------------------------------------------------------------------
