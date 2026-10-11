@@ -4,7 +4,7 @@
 # Font: labisbal.cat/regidors (10.10.2026). Si canvia algú, edita només la seva línia.
 # Equip de govern (7): PSC - Independents per la Bisbal - CP i Compromís x la Bisbal - Junts.
 Òscar Aparicio Pedrosa | Alcalde | PSC - Independents per la Bisbal - CP
-Eva Rovira Anglada | 1a tinenta d'alcalde | Compromís x la Bisbal - Junts
+Eva Rovira Anglada | 1a tinenta d'alcalde i regidora de Recursos Humans | Compromís x la Bisbal - Junts
 Gaëtan Chapel | Regidor de l'equip de govern | PSC - Independents per la Bisbal - CP
 Dolors Molina Carrillo | Regidora de l'equip de govern | PSC - Independents per la Bisbal - CP
 Francesc Vidal Rodríguez | Regidor de l'equip de govern | PSC - Independents per la Bisbal - CP
@@ -12,9 +12,9 @@ Martí Pérez Roca | Regidor de l'equip de govern | Compromís x la Bisbal - Jun
 Josep Maria Plaja Solà | Regidor de l'equip de govern | Compromís x la Bisbal - Junts
 # Oposició (10)
 Enric Marquès Serra | Regidor de l'oposició | ERC - AM
-Cristina Matarrodona Jofre | Regidora de l'oposició | ERC - AM
-Jordi Vilà Salvà | Regidor de l'oposició | ERC - AM
-Clàudia Drinceanu | Regidora de l'oposició | ERC - AM
+Cristina Matarrodona Jofre | Regidora de l'oposició | ERC - AM | Matarradona
+Jordi Vilà Salvà | Regidor de l'oposició | ERC - AM | Vilar
+Clàudia Drinceanu | Regidora de l'oposició | ERC - AM | Trinciano, Dinciano, Drinciano
 Pau Martí Muriel | Regidor de l'oposició | CUP - Som Poble - Amunt
 Neus Sumalla Saballs | Regidora de l'oposició | CUP - Som Poble - Amunt
 Enric Llensa Martí | Regidor de l'oposició | CUP - Som Poble - Amunt
