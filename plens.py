@@ -55,7 +55,7 @@ NOMES_TRANSCRIPCIO = ORDRE.lower() == "nomes"
 if NOMES_TRANSCRIPCIO:
     ORDRE = ""
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
-GEMINI_MODELS = [m for m in [os.environ.get("GEMINI_MODEL", "").strip(), "gemini-flash-latest", "gemini-2.5-flash"] if m]
+GEMINI_MODELS = [m for m in [os.environ.get("GEMINI_MODEL", "").strip(), "gemini-flash-latest", "gemini-3.8-flash"] if m]
 
 # Composició de cada consistori: fitxer de text a la carpeta consistoris/.
 # Es tria pel títol o l'ordre del dia; si no hi surt cap altre municipi, la Bisbal.
@@ -854,7 +854,8 @@ def gemini(prompt, json_mode=False):
         if text:
             print("Gemini: resposta de %s (%d caràcters)" % (model, len(text)))
             return text
-        errors.append(model + ": resposta buida")
+        motiu = ((r.json().get("candidates") or [{}])[0].get("finishReason") or "?")
+        errors.append(model + ": resposta buida (" + motiu + ")")
     raise RuntimeError("; ".join(errors)[:400])
 
 
