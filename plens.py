@@ -21,6 +21,11 @@
 #   aina  -> projecte-aina/faster-whisper-large-v3-ca-3catparla (Projecte Aina,
 #            entrenat amb català): segons la seva fitxa, transcriu SENSE signes
 #            de puntuació. Més lent.
+#
+# HEMEROTECA (canvi 13.10.2026): després d'enviar el Word a Telegram, se n'envia
+# una còpia a la carpeta hemeroteca\plens de Drive (Apps Script «Cercador
+# Hemeroteca La TdG»). Secrets: CERCA_URL i CERCA_CLAU. Si falten o falla,
+# només s'avisa al registre: el Word a Telegram no se'n ressent.
 # =============================================================================
 import glob, json, os, re, subprocess, sys, time, urllib.error, urllib.parse, urllib.request
 
@@ -102,6 +107,26 @@ def enviar_document(cami, llegenda):
         r = requests.post(API + "/sendDocument", data=d, files={"document": (os.path.basename(cami), f)}, timeout=180)
         if r.status_code != 200:
             print("sendDocument:", r.status_code, r.text[:200])
+
+
+# Canvi 13.10.2026: còpia del Word a l'hemeroteca de Drive (hemeroteca\plens).
+# Mai fa fallar el bot: si alguna cosa no va, només ho escriu al registre.
+def desar_a_hemeroteca(cami):
+    import base64
+    url = os.environ.get("CERCA_URL", "").strip()
+    clau = os.environ.get("CERCA_CLAU", "").strip()
+    if not url or not clau:
+        print("Hemeroteca: falten CERCA_URL o CERCA_CLAU; no se'n desa còpia.")
+        return
+    try:
+        with open(cami, "rb") as f:
+            dades = base64.b64encode(f.read()).decode("ascii")
+        cos = json.dumps({"clau": clau, "nom": os.path.basename(cami), "dades": dades}).encode("utf-8")
+        peticio = urllib.request.Request(url, data=cos, headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(peticio, timeout=180) as r:
+            print("Hemeroteca: " + r.read().decode("utf-8", "replace")[:200])
+    except Exception as e:
+        print("::warning::Hemeroteca: no s'ha pogut desar la còpia (%s)" % e)
 
 
 def enviar_text(text):
@@ -1288,6 +1313,7 @@ def unir():
                         ((" · amb resum per punts" if es_ple() else " · amb resum per temes") if resum_punts else "") +
                         "\nTranscripció automàtica: revisa-la abans de citar-la.")
         enviar_document(cami, llegenda_doc)
+        desar_a_hemeroteca(cami)  # canvi 13.10.2026: còpia a Drive (després de Telegram)
         if avis_resum:
             enviar_text(avis_resum)
         estat(resum + "\n📄 Document de Word enviat" + (" (amb resum)." if resum_punts else "."))
