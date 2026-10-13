@@ -3,6 +3,7 @@
 # Repositori PÚBLIC latdg/plens (minuts il·limitats i màquines de 4 processadors).
 # Fitxers: .github/workflows/plens.yml i plens.py (a l'arrel del repositori).
 # Secrets: TELEGRAM_TOKEN_PLENS, HF_TOKEN i GEMINI_API_KEY (resum per punts).
+# Canvi 13.10.2026: secrets CERCA_URL i CERCA_CLAU (còpia del Word a l'hemeroteca).
 # Canvi 10.10.2026: input «ordre» (ordre del dia en text, «pdf:<id>» o «resum»)
 # i resum per punts amb Gemini al final del pas «unir». Pas «seguiment»: el
 # percentatge de la transcripció al missatge de Telegram, cada minut.
@@ -39,6 +40,9 @@ env:
   PARLANTS: ${{ inputs.parlants }}
   ORDRE: ${{ inputs.ordre }}
   GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+  # Canvi 13.10.2026: còpia del Word a l'hemeroteca de Drive
+  CERCA_URL: ${{ secrets.CERCA_URL }}
+  CERCA_CLAU: ${{ secrets.CERCA_CLAU }}
 
 jobs:
   preparar:
