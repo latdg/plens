@@ -60,7 +60,8 @@ NOMES_TRANSCRIPCIO = ORDRE.lower() == "nomes"
 if NOMES_TRANSCRIPCIO:
     ORDRE = ""
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
-GEMINI_MODELS = [m for m in [os.environ.get("GEMINI_MODEL", "").strip(), "gemini-flash-latest", "gemini-3.8-flash"] if m]
+GEMINI_MODELS = [m for m in [os.environ.get("GEMINI_MODEL", "").strip(), "gemini-flash-latest", "gemini-3.8-flash",
+                                  "gemini-flash-lite-latest"] if m]   # canvi 31.10.2026: el lite, de reserva
 
 # Composició de cada consistori: fitxer de text a la carpeta consistoris/.
 # Es tria pel títol o l'ordre del dia; si no hi surt cap altre municipi, la Bisbal.
@@ -855,32 +856,57 @@ def corregir_noms(text, persones):
 
 
 def gemini(prompt, json_mode=False):
+    """Canvi 31.10.2026: la resposta arriba a trossos (streamGenerateContent), perquè amb
+    un ple llarg Gemini trigava tant a contestar d'una tirada que Google tallava la
+    connexió («Remote end closed connection without response»). Si la connexió es talla
+    igualment, es torna a provar (3 cops per model) i, si no, es passa al model següent."""
     import requests
     errors = []
     for model in GEMINI_MODELS:
-        url = "https://generativelanguage.googleapis.com/v1beta/models/" + model + ":generateContent"
+        url = ("https://generativelanguage.googleapis.com/v1beta/models/" + model +
+               ":streamGenerateContent?alt=sse")
         cos = {"contents": [{"role": "user", "parts": [{"text": prompt}]}],
                "generationConfig": {"temperature": 0.2, "maxOutputTokens": 32768}}
         if json_mode:
             cos["generationConfig"]["responseMimeType"] = "application/json"
+        text, motiu, error_model = "", "?", ""
         for intent in range(3):
-            r = requests.post(url, headers={"x-goog-api-key": GEMINI_KEY, "Content-Type": "application/json"},
-                              json=cos, timeout=600)
-            if r.status_code in (429, 500, 503) and intent < 2:
-                print("Gemini %s: HTTP %s, es torna a provar d'aquí a 60 s" % (model, r.status_code))
-                time.sleep(60)
-                continue
-            break
-        if r.status_code != 200:
-            errors.append("%s: HTTP %s %s" % (model, r.status_code, r.text[:200]))
-            continue
-        parts = ((r.json().get("candidates") or [{}])[0].get("content") or {}).get("parts") or []
-        text = "".join(p.get("text", "") for p in parts if not p.get("thought")).strip()
+            text, motiu, error_model = "", "?", ""
+            try:
+                with requests.post(url, headers={"x-goog-api-key": GEMINI_KEY, "Content-Type": "application/json"},
+                                   json=cos, stream=True, timeout=(30, 900)) as r:
+                    if r.status_code != 200:
+                        error_model = "HTTP %s %s" % (r.status_code, r.text[:200])
+                        if r.status_code in (429, 500, 502, 503, 504) and intent < 2:
+                            print("Gemini %s: %s, es torna a provar d'aquí a 60 s" % (model, error_model[:80]))
+                            time.sleep(60)
+                            continue
+                        break
+                    trossos = []
+                    for linia in r.iter_lines(decode_unicode=True):
+                        if not linia or not linia.startswith("data:"):
+                            continue
+                        try:
+                            d = json.loads(linia[5:].strip())
+                        except ValueError:
+                            continue
+                        cand = (d.get("candidates") or [{}])[0]
+                        for p in ((cand.get("content") or {}).get("parts") or []):
+                            if not p.get("thought") and p.get("text"):
+                                trossos.append(p["text"])
+                        motiu = cand.get("finishReason") or motiu
+                    text = "".join(trossos).strip()
+                break
+            except (requests.exceptions.ConnectionError, requests.exceptions.ChunkedEncodingError,
+                    requests.exceptions.Timeout) as e:
+                error_model = "connexió tallada (%s)" % str(e)[:150]
+                print("Gemini %s: %s; intent %d de 3" % (model, error_model, intent + 1))
+                if intent < 2:
+                    time.sleep(30)
         if text:
             print("Gemini: resposta de %s (%d caràcters)" % (model, len(text)))
             return text
-        motiu = ((r.json().get("candidates") or [{}])[0].get("finishReason") or "?")
-        errors.append(model + ": resposta buida (" + motiu + ")")
+        errors.append(model + ": " + (error_model or "resposta buida (" + motiu + ")"))
     raise RuntimeError("; ".join(errors)[:400])
 
 
