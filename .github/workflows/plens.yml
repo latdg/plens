@@ -131,7 +131,10 @@ jobs:
           # Versions fixades (canvi 05.10.2026): amb torch 2.6 o més nou i huggingface_hub 1.x,
           # pyannote 3.3.2 no pot carregar els seus models.
           pip install -q "torch==2.5.1" "torchaudio==2.5.1" --index-url https://download.pytorch.org/whl/cpu
-          pip install -q "pyannote.audio==3.3.2" "numpy<2" "huggingface_hub<0.27"
+          # Canvi 31.10.2026: sense aquesta restricció, el segon pip pujava torch a 2.15 i
+          # torchaudio a 2.11 (sense AudioMetaData) i pyannote fallava a tots els trossos.
+          printf 'torch==2.5.1\ntorchaudio==2.5.1\n' > /tmp/fixades.txt
+          pip install -q -c /tmp/fixades.txt "pyannote.audio==3.3.2" "numpy<2" "huggingface_hub<0.27"
       - uses: actions/download-artifact@v4
         with: { name: audio, path: treball/ }
       - name: Identificar qui parla
@@ -164,7 +167,10 @@ jobs:
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
           pip install -q "torch==2.5.1" "torchaudio==2.5.1" --index-url https://download.pytorch.org/whl/cpu
-          pip install -q "pyannote.audio==3.3.2" "numpy<2" "huggingface_hub<0.27"
+          # Canvi 31.10.2026: sense aquesta restricció, el segon pip pujava torch a 2.15 i
+          # torchaudio a 2.11 (sense AudioMetaData) i pyannote fallava a tots els trossos.
+          printf 'torch==2.5.1\ntorchaudio==2.5.1\n' > /tmp/fixades.txt
+          pip install -q -c /tmp/fixades.txt "pyannote.audio==3.3.2" "numpy<2" "huggingface_hub<0.27"
       - uses: actions/download-artifact@v4
         with: { name: audio, path: treball/ }
       - name: Qui parla al tros ${{ matrix.tros }}

@@ -883,6 +883,9 @@ def gemini(prompt, json_mode=False):
                             continue
                         break
                     trossos = []
+                    # Canvi 31.10.2026: el flux SSE no porta charset i requests el llegia com a
+                    # Latin-1 («AprovaciÃ³»); es força UTF-8.
+                    r.encoding = "utf-8"
                     for linia in r.iter_lines(decode_unicode=True):
                         if not linia or not linia.startswith("data:"):
                             continue
