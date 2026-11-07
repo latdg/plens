@@ -166,6 +166,27 @@ def hms(s):
     return "%02d:%02d:%02d" % (s // 3600, s % 3600 // 60, s % 60)
 
 
+def trossos_amb_temps(par, llarg=30, maxim=45):
+    """Canvi 07.11.2026: parteix un paràgraf en trossos d'uns 30 s (si pot, en un
+    punt o una coma; mai més de 45 s) i en dona l'inici i el final de cadascun.
+    El text ja ha passat pel corrector, així que el temps de cada paraula s'agafa
+    en proporció de les paraules originals: l'error és d'un o dos segons."""
+    paraules = par["text"].split()
+    ts = par.get("ts") or [par["s"]]
+    if not paraules:
+        return []
+    n, m = len(paraules), len(ts)
+    temps = lambda k: ts[min(m - 1, int(round(k * m / n)))]
+    trossos, inici_k = [], 0
+    for k in range(1, n):
+        dur = temps(k) - temps(inici_k)
+        if dur >= maxim or (dur >= llarg and re.search(r"[.?!;:,]$", paraules[k - 1])):
+            trossos.append((temps(inici_k), temps(k), " ".join(paraules[inici_k:k])))
+            inici_k = k
+    trossos.append((temps(inici_k), par["e"], " ".join(paraules[inici_k:])))
+    return trossos
+
+
 def durada_text(s):
     s = int(s)
     return ("%d h %02d min" % (s // 3600, s % 3600 // 60)) if s >= 3600 else ("%d min" % max(1, s // 60))
@@ -999,12 +1020,21 @@ def resumir(blocs_transcripcio):
             + "FES AIXÒ:\n"
             "1. PUNTS. Per a cada punt de l'ordre del dia, en ordre:\n"
             "- número i títol del punt;\n"
-            "- hora d'inici a la transcripció [hh:mm:ss];\n"
+            "- hora d'inici a la transcripció (hh:mm:ss);\n"
             "- resum de 2 a 4 frases: què s'hi aprova o s'hi debat i per què;\n"
             "- intervencions: una línia per persona (nom i grup) amb la seva posició en una frase;\n"
+            "- DECLARACIONS DESTACADES (obligatori a TOTS els punts on algú intervé): una línia que digui "
+            "«Declaracions destacades:» i, a sota, de 2 a 4 línies, una per declaració, amb aquest format exacte:\n"
+            "  - «frase textual» — Nom Cognoms (grup), de hh:mm:ss a hh:mm:ss\n"
+            "  Les frases han de ser TEXTUALS, copiades de la transcripció (se'n pot treure alguna paraula del mig "
+            "amb […]), triades perquè són les més informatives o citables (xifres, compromisos, crítiques, anuncis). "
+            "Els temps són els de la transcripció: cada tros porta [inici–final]; dona l'inici del tros on comença "
+            "la frase i el final del tros on acaba. Si un punt no té cap intervenció (tràmit), escriu "
+            "«Declaracions destacades: cap (punt de tràmit)»;\n"
             "- votació: el resultat i què ha votat cada grup, només si es diu a la gravació; si no es diu, escriu "
             "«Votació: no es diu a la gravació».\n"
-            "Els punts de tràmit (aprovació de l'acta, donar compte de decrets) es poden resumir en una línia.\n"
+            "Els punts de tràmit (aprovació de l'acta, donar compte de decrets) es poden resumir en una línia, "
+            "però sempre amb la línia de declaracions destacades.\n"
             "2. Al final, «TITULARS POSSIBLES»: de 3 a 5 titulars informatius i curts amb el que és més notícia del ple.\n\n"
             "NOMS: cada persona del consistori, amb el nom sencer tal com surt a la composició (si a la transcripció diu "
             "«el senyor Vidal», escriu Francesc Vidal Rodríguez). Si el nom surt mal transcrit, fes servir el de la llista. "
@@ -1023,10 +1053,15 @@ def resumir(blocs_transcripcio):
             "1. Una primera part «DE QUÈ VA», de 2 a 3 frases: qui parla, en quin context i de què.\n"
             "2. TEMES. Per a cada tema, en l'ordre en què es tracta:\n"
             "- títol del tema;\n"
-            "- hora d'inici a la transcripció [hh:mm:ss];\n"
+            "- hora d'inici a la transcripció (hh:mm:ss);\n"
             "- resum de 2 a 4 frases;\n"
             "- qui hi diu què: una línia per persona amb la seva idea principal;\n"
-            "- si n'hi ha, una frase textual destacable entre cometes, amb qui la diu i l'hora.\n"
+            "- DECLARACIONS DESTACADES (obligatori a TOTS els temes): una línia que digui «Declaracions destacades:» "
+            "i, a sota, de 2 a 4 línies, una per declaració, amb aquest format exacte:\n"
+            "  - «frase textual» — Nom Cognoms, de hh:mm:ss a hh:mm:ss\n"
+            "  Les frases han de ser TEXTUALS, copiades de la transcripció (se'n pot treure alguna paraula del mig "
+            "amb […]), triades perquè són les més informatives o citables. Els temps són els de la transcripció: "
+            "cada tros porta [inici–final]; dona l'inici del tros on comença la frase i el final del tros on acaba.\n"
             "3. Al final, «TITULARS POSSIBLES»: de 3 a 5 titulars informatius i curts.\n\n"
             "NOMS: fes servir els noms tal com surten a la llista de participants. No hi posis ningú que no hi sigui, "
             "si hi ha llista.\n"
@@ -1183,8 +1218,10 @@ def unir():
         if darrer and darrer["p"] == p and w["s"] - darrer["e"] < (4 if torns else 2.5):
             darrer["text"] += w["w"]
             darrer["e"] = w["e"]
+            darrer["ts"].append(w["s"])
         else:
-            paragrafs.append({"p": p, "s": w["s"], "e": w["e"], "text": w["w"]})
+            # Canvi 07.11.2026: «ts», l'inici de cada paraula, per situar les declaracions.
+            paragrafs.append({"p": p, "s": w["s"], "e": w["e"], "text": w["w"], "ts": [w["s"]]})
         anterior = p
 
     estat("✅ Transcripció feta. ⏳ Engegant el corrector de Softcatalà...")
@@ -1252,6 +1289,19 @@ def unir():
                               "\n" + par["text"])
         return llista
 
+    # Canvi 07.11.2026: per al resum, la transcripció va en trossos d'uns 30 s amb
+    # l'inici i el final de cada tros ([00:12:05–00:12:31]), perquè Gemini pugui dir
+    # de quin minut i segon a quin minut i segon surt cada declaració destacada.
+    def muntar_blocs_temps(etiquetes_parlants):
+        llista = []
+        for par in paragrafs:
+            if not par["text"]:
+                continue
+            qui = (" " + etiquetes_parlants[par["p"]] + ":") if par["p"] in etiquetes_parlants else ""
+            for ini, fi, text in trossos_amb_temps(par):
+                llista.append("[" + hms(ini) + "–" + hms(fi) + "]" + qui + "\n" + text)
+        return llista
+
     cos = muntar_blocs(noms)
 
     # Canvi 10.10.2026: noms reals dels parlants (Gemini), abans d'enviar la transcripció.
@@ -1309,7 +1359,7 @@ def unir():
     if not NOMES_TRANSCRIPCIO:
         estat(resum + "\n⏳ Preparant el resum amb Gemini...")
         try:
-            resum_punts = resumir(cos)
+            resum_punts = resumir(muntar_blocs_temps(noms_finals if identificats else noms))
         except Exception as e:
             print("::warning::Resum per punts: %s" % e)
             avis_resum = "⚠️ No he pogut fer el resum: " + str(e)[:300]
