@@ -1,0 +1,42 @@
+# =============================================================================
+# PREGUNTES SOBRE UNA TRANSCRIPCIÓ — La TdG · 12.11.2026
+# El llança el Worker latdg-plens quan respons al Word d'una transcripció (o a un
+# missatge de la transcripció) amb una pregunta. preguntar.py llegeix el document,
+# ho pregunta a Gemini (secret GEMINI_API_KEY) i respon al bot de plens.
+# =============================================================================
+name: Preguntar
+run-name: "Pregunta · ${{ inputs.pregunta }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      chat_id: { description: "xat", required: true }
+      missatge_id: { description: "missatge de la pregunta", required: false, default: "" }
+      estat_id: { description: "missatge on s'escriu la resposta", required: false, default: "" }
+      file_id: { description: "Word de la transcripció", required: false, default: "" }
+      context: { description: "text de la transcripció (si no hi ha Word)", required: false, default: "" }
+      pregunta: { description: "pregunta", required: true }
+      anteriors: { description: "preguntes i resposta anteriors de la conversa", required: false, default: "" }
+
+jobs:
+  preguntar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - name: Eines
+        run: pip install -q requests
+      - name: Respondre
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN_PLENS }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          CHAT_ID: ${{ inputs.chat_id }}
+          MISSATGE_ID: ${{ inputs.missatge_id }}
+          ESTAT_ID: ${{ inputs.estat_id }}
+          FILE_ID: ${{ inputs.file_id }}
+          CONTEXT: ${{ inputs.context }}
+          PREGUNTA: ${{ inputs.pregunta }}
+          ANTERIORS: ${{ inputs.anteriors }}
+        run: python3 preguntar.py

@@ -22,6 +22,10 @@
 #            entrenat amb català): segons la seva fitxa, transcriu SENSE signes
 #            de puntuació. Més lent.
 #
+# PREGUNTES (canvi 12.11.2026): el Word surt amb el botó «💬 Pregunta-hi». Responent-hi
+# amb una pregunta, el Worker llança preguntar.yml (preguntar.py), que la contesta amb
+# Gemini a partir del document.
+#
 # HEMEROTECA (canvi 13.10.2026): després d'enviar el Word a Telegram, se n'envia
 # una còpia a la carpeta hemeroteca\plens de Drive (Apps Script «Cercador
 # Hemeroteca La TdG»). Secrets: CERCA_URL i CERCA_CLAU. Si falten o falla,
@@ -98,10 +102,17 @@ def estat(text):
         tg("editMessageText", {"chat_id": CHAT, "message_id": ESTAT, "text": ("📥 Rebut! " + text)[:4096]})
 
 
-def enviar_document(cami, llegenda):
+# Canvi 12.11.2026: botó per fer preguntes sobre la transcripció (el respon el Worker,
+# amb el workflow preguntar.yml).
+BOTO_PREGUNTA = {"inline_keyboard": [[{"text": "💬 Pregunta-hi", "callback_data": "q"}]]}
+
+
+def enviar_document(cami, llegenda, botons=None):
     import requests
     with open(cami, "rb") as f:
         d = {"chat_id": CHAT, "caption": llegenda[:1024]}
+        if botons:
+            d["reply_markup"] = json.dumps(botons)
         if MISSATGE:
             d["reply_to_message_id"] = MISSATGE
             d["allow_sending_without_reply"] = "true"
@@ -1391,7 +1402,7 @@ def unir():
                         (" · " + str(len(identificats)) + " parlants amb nom" if identificats else "") +
                         ((" · amb resum per punts" if es_ple() else " · amb resum per temes") if resum_punts else "") +
                         "\nTranscripció automàtica: revisa-la abans de citar-la.")
-        enviar_document(cami, llegenda_doc)
+        enviar_document(cami, llegenda_doc, botons=BOTO_PREGUNTA)
         desar_a_hemeroteca(cami)  # canvi 13.10.2026: còpia a Drive (després de Telegram)
         if avis_resum:
             enviar_text(avis_resum)
