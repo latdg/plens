@@ -3,14 +3,17 @@
 #
 # El llança el Worker latdg-plens (workflow preguntar.yml) quan respons al Word
 # d'una transcripció (o a un dels missatges de la transcripció) amb una pregunta.
-# Llegeix el text del Word, en pregunta a Gemini (la mateixa clau i els mateixos
-# models que el resum dels plens, plens.gemini) i escriu la resposta dins del
+# Normalment respon el mateix Worker; aquest workflow és la reserva (sense clau al
+# Worker o document massa llarg). Llegeix el text del Word, en pregunta a Gemini (la
+# mateixa clau que el resum dels plens) i escriu la resposta dins del
 # missatge «💬 ...» que ha deixat el Worker. Amb ANTERIORS, té en compte la conversa
 # (les preguntes i, si hi respons, la resposta anterior), com a Plaud.
 # =============================================================================
 import html, os, re, sys, time, traceback, urllib.request, zipfile, io
 
-import plens   # tg(), gemini() i la configuració de Gemini
+import json, urllib.error
+
+import plens   # tg() i la clau de Gemini
 
 CHAT = os.environ.get("CHAT_ID", "").strip()
 MISSATGE = os.environ.get("MISSATGE_ID", "").strip()   # la pregunta
@@ -73,6 +76,50 @@ def document():
     return dades.decode("utf-8", "replace")
 
 
+# Gemini per a les preguntes (canvi 12.11.2026): sense esperes. Amb 429 (quota) o 503
+# (saturat) es passa de seguida al model següent, i amb el mínim de raonament.
+MODELS = ["gemini-flash-latest", "gemini-flash-lite-latest", "gemini-2.5-flash"]
+RAONAMENT = [{"thinkingLevel": "low"}, {"thinkingBudget": 0}, None]
+
+
+def gemini(prompt):
+    errors = []
+    for volta in range(2):
+        for model in MODELS:
+            for raonament in RAONAMENT:
+                config = {"temperature": 0.2}
+                if raonament:
+                    config["thinkingConfig"] = raonament
+                cos = json.dumps({"contents": [{"role": "user", "parts": [{"text": prompt}]}],
+                                  "generationConfig": config}).encode()
+                req = urllib.request.Request(
+                    "https://generativelanguage.googleapis.com/v1beta/models/" + model + ":generateContent",
+                    data=cos, headers={"x-goog-api-key": plens.GEMINI_KEY, "Content-Type": "application/json"})
+                try:
+                    with urllib.request.urlopen(req, timeout=600) as r:
+                        j = json.loads(r.read().decode("utf-8"))
+                    parts = (((j.get("candidates") or [{}])[0].get("content") or {}).get("parts") or [])
+                    text = "".join(p.get("text", "") for p in parts if not p.get("thought")).strip()
+                    if text:
+                        print("Gemini: resposta de %s" % model)
+                        return text
+                    errors.append(model + ": resposta buida")
+                    break
+                except urllib.error.HTTPError as e:
+                    errors.append("%s: HTTP %s %s" % (model, e.code, e.read()[:150].decode("utf-8", "replace")))
+                    print(errors[-1])
+                    if e.code == 400 and raonament is not None:
+                        continue   # l'opció de raonament no s'admet: es prova la següent
+                    break          # 429, 503...: model següent, sense esperar
+                except Exception as e:
+                    errors.append("%s: %s" % (model, e))
+                    print(errors[-1])
+                    break
+        if volta == 0:
+            time.sleep(15)   # tots els models saturats: una sola espera curta i una altra volta
+    raise RuntimeError("Gemini no ha pogut respondre (" + "; ".join(errors)[-300:] + ")")
+
+
 def trossos(text, maxim=4000):
     parts = []
     while len(text) > maxim:
@@ -102,7 +149,7 @@ def principal():
     edita("💬 Pensant la resposta...")
     prompt = (INSTRUCCIONS + "\n\nDOCUMENT:\n\n" + text + "\n\n\n" +
               ((ANTERIORS + "\n\n") if ANTERIORS else "") + "PREGUNTA: " + PREGUNTA)
-    resposta = plens.gemini(prompt)
+    resposta = gemini(prompt)
     resposta = re.sub(r"\*\*", "", resposta)
     resposta = re.sub(r"^#+\s*", "", resposta, flags=re.M).strip()
 
