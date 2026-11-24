@@ -182,6 +182,9 @@ jobs:
     needs: [preparar, transcriure, parlants, parlants_trossos]
     if: ${{ always() && needs.preparar.result == 'success' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: write   # canvi 24.11.2026: per pujar l'índex del ple a la release
+      actions: read
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -213,6 +216,8 @@ jobs:
           cp baixat/parlants/parlants.json treball/ 2>/dev/null || true
           cp baixat/parlants-*/parlants_*.json treball/ 2>/dev/null || true
       - name: Unir, corregir i enviar
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: python3 plens.py unir
 
   avis:

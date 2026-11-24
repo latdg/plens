@@ -1417,6 +1417,78 @@ def unir():
         if avis_resum:
             enviar_text(avis_resum)
 
+    # Canvi 24.11.2026: índex per punts per a La TdG redacció (després del Word).
+    try:
+        publicar_index(TITOL or info.get("nom") or "Ple", durada, resum_punts, paragrafs,
+                       noms_finals if identificats else noms)
+    except Exception as e:
+        print("::warning::Índex per a la redacció: %s" % e)
+
+
+# -----------------------------------------------------------------------------
+# ÍNDEX PER A LA TdG REDACCIÓ (canvi 24.11.2026): als plens, els punts de l'ordre
+# del dia amb l'hora d'inici, les declaracions destacades i la transcripció amb els
+# temps, en un index.json que es puja a la release del ple. El workflow plens.yml
+# de latdg/redaccio el copia al bloc «Plens» per cercar el vídeo pels punts.
+# Va després del Word i qualsevol error només s'avisa al registre.
+# -----------------------------------------------------------------------------
+def a_segons(t):
+    m = re.match(r"(\d{1,2}):(\d{2}):(\d{2})", t or "")
+    return int(m.group(1)) * 3600 + int(m.group(2)) * 60 + int(m.group(3)) if m else None
+
+
+def publicar_index(titol_doc, durada, resum_punts, paragrafs, etiquetes):
+    if not es_ple():
+        return
+    m = re.search(r"github\.com/latdg/plens/releases/download/([^/]+)/", URL)
+    if m:
+        tag = urllib.parse.unquote(m.group(1))
+        mv = re.search(r"([A-Za-z0-9_-]{11})$", tag)
+        video = mv.group(1) if mv else ""
+    else:
+        mv = re.search(r"(?:v=|youtu\.be/|/live/|/shorts/)([A-Za-z0-9_-]{11})", URL)
+        video = mv.group(1) if mv else ""
+        tag = "index-" + video
+    token, repo = os.environ.get("GH_TOKEN", "").strip(), os.environ.get("GITHUB_REPOSITORY", "").strip()
+    if not video or not token or not repo:
+        print("Índex per a la redacció: no és un ple de YouTube o falta el testimoni; no es puja.")
+        return
+    import requests
+    punts = []
+    for bloc in (resum_punts[1] if resum_punts else []):
+        linies = [l.strip() for l in bloc.splitlines() if l.strip()]
+        if not linies or re.match(r"TITULARS", linies[0], re.I):
+            continue
+        temps = re.findall(r"\b\d{1,2}:\d{2}:\d{2}\b", bloc)
+        decl = []
+        for l in linies:
+            md = re.search(r"«(.+?)»\s*[—–-]\s*(.+?),?\s+de\s+(\d{1,2}:\d{2}:\d{2})\s+a\s+(\d{1,2}:\d{2}:\d{2})", l)
+            if md:
+                decl.append({"text": md.group(1), "qui": md.group(2).strip(" ,"), "s": a_segons(md.group(3)),
+                             "e": a_segons(md.group(4))})
+        punts.append({"titol": linies[0], "s": a_segons(temps[0]) if temps else None, "text": bloc, "declaracions": decl})
+    transcripcio = [{"s": int(p["s"]), "qui": etiquetes.get(p["p"], ""), "text": p["text"]} for p in paragrafs if p["text"]]
+    dades = json.dumps({"versio": 1, "video": video, "titol": titol_doc, "durada": durada,
+                        "generat": time.strftime("%d.%m.%Y %H.%M"), "punts": punts, "transcripcio": transcripcio},
+                       ensure_ascii=False).encode("utf-8")
+    gh = {"Authorization": "Bearer " + token, "Accept": "application/vnd.github+json"}
+    api = "https://api.github.com/repos/" + repo
+    r = requests.get(api + "/releases/tags/" + tag, headers=gh, timeout=30)
+    if r.status_code == 200:
+        rel = r.json()
+    else:
+        r = requests.post(api + "/releases", headers=gh, timeout=30, json={
+            "tag_name": tag, "name": titol_doc, "body": "Índex del ple per a La TdG redacció.\nOrigen: " + URL})
+        r.raise_for_status()
+        rel = r.json()
+    for a in rel.get("assets", []):
+        if a["name"] == "index.json":
+            requests.delete(api + "/releases/assets/%d" % a["id"], headers=gh, timeout=30)
+    r = requests.post(rel["upload_url"].split("{")[0], params={"name": "index.json"}, data=dades, timeout=120,
+                      headers=dict(gh, **{"Content-Type": "application/json"}))
+    r.raise_for_status()
+    print("Índex per a la redacció pujat: %d punts, %d paràgrafs." % (len(punts), len(transcripcio)))
+
 
 # -----------------------------------------------------------------------------
 if __name__ == "__main__":
